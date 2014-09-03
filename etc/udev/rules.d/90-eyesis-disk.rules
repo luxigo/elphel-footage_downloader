@@ -1,0 +1,2 @@
+KERNEL=="sd*", RUN+="/usr/local/bin/eyesisdisk"
+

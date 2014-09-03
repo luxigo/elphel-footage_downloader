@@ -43,7 +43,7 @@ N=9
 MUXES=(192.168.0.224 192.168.0.228)
 MUX_MAX_INDEX=(4 5)
 
-SPOOL=/var/spool/footage
+SPOOL=/var/spool/elphel
 
 [ -f /etc/defaults/footage_downloader ] && . /etc/defaults/footage_downloader
 

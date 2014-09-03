@@ -1,0 +1,12 @@
+#!/bin/bash
+
+SPOOL=/var/spool/elphel
+
+[ -f /etc/defaults/footage_downloader ] && . /etc/defaults/footage_downloader
+
+case "$ACTION" in
+add)
+  [ "$DEVTYPE" = "disk" ] && /usr/bin/env | grep  -E -v -e '^PATH=' -e '^_=' -e '^PWD=' -e '^SEQNUM=' -e '^SHLVL=' > $SPOOL/$ID_SERIAL_SHORT
+  ;;
+esac
+  

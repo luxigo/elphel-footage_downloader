@@ -118,6 +118,7 @@ logstdout() {
   done
 }
 
+# return array index of serial
 get_ssd_index() {
   _SERIAL=$1
   for (( i=0 ; $i < ${#SSD_SERIAL[@]} ; ++i )) ; do
@@ -143,7 +144,6 @@ get_scsihost() {
 }
 
 # wait udev generated files in spool folder before mounting disk and launching backup in background
-
 wait_and_backup() {
 
   inotifywait -m -e close_write $SPOOL | while read l ; do
@@ -190,6 +190,7 @@ wait_and_backup() {
   done
 }
 
+# backup filesystem then enqueue next ssd backup for this mux
 backup() {
   MUX_INDEX=$1
   REMOTE_SSD_INDEX=$2
@@ -213,27 +214,29 @@ backup() {
   # repair filesystem
   log checking $SERIAL ${DEVICE}$PARTNUM integrity
   fsck -y ${DEVICE}$PARTNUM 2>&1 | logstdout
-
   FSCK_STATUS=$?
   [ $FSCK_STATUS -gt 1 ] && killtree -KILL $MYPID
 
   # mount device
   mount -o ro,sync ${DEVICE}$PARTNUM $MOUNTPOINT || killtree -KILL $MYPID
 
+  # actual backup
   log backuping mux $MUX_INDEX index $REMOTE_SSD_INDEX serial $SERIAL partition ${DEVICE}$PARTNUM
 
-  # actual backup
   RSYNCDEST=$DEST/mov/$(($(get_ssd_index $SERIAL)+1))
   rsync -av $MOUNTPOINT/$FILE_PATTERN $RSYNCDEST 2>&1 | logstdout $RSYNCDEST $MOUNTPOINT 
   STATUS=$?
 
   log backup_status $STATUS mux ${MUX_INDEX} index ${REMOTE_SSD_INDEX}
 
+  # unmount device
   log umount $MOUNTPOINT
   umount $MOUNTPOINT 
 
+  # remove flag
   rm /tmp/${MUX_INDEX}_${REMOTE_SSD_INDEX}_connected || killtree -KILL $MYPID
 
+  # sync filesystems
   log syncing
   sync
 

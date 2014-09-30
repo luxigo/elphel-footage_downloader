@@ -382,14 +382,16 @@ if [ -z "$DESTINATION" ] ; then
   usage 1
 fi
 
+# get camera master ip mac address
 ping -w 5 -c 1 $BASE_IP.$MASTER_IP > /dev/null || exit 1
 MACADDR=$(macaddr $BASE_IP.$MASTER_IP)
 [ -z "$MACADDR" ] && exit 1
 
+# set destination folder
 DEST="$DESTINATION/$MACADDR"
-
 mkdir -p "$DEST/mov" || exit 1
 
+# build sshall login list
 for (( i=0 ; $i < $N ; ++i )) ; do
   USER_AT_HOST="$USER_AT_HOST "root@$BASE_IP.$((MASTER_IP + i))
 done
@@ -426,6 +428,7 @@ log got ${#SSD_SERIAL[@]} SSD serials
 
 [ ${#SSD_SERIAL[@]} -ne $N ] && exit 1
 
+# unmount camera ssd
 log umount CF
 umount_all
 

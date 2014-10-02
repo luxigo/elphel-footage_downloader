@@ -49,6 +49,8 @@ SPOOL=/var/spool/elphel
 
 [ -f /etc/defaults/footage_downloader ] && . /etc/defaults/footage_downloader
 
+mkdir -p $SPOOL || exit 1
+
 [ -n "$DEBUG" ] && set -x
 
 export DISK_CONNECTING_TMP=$(mktemp)
@@ -415,18 +417,19 @@ get_remote_disk_serial /dev/hda 2>&1 | tee | while read l ; do
     ;;
   stdout)
     SERIAL=${msg[3]}
-    log SSD_SERIAL[$INDEX]=$SERIAL >> $SSD_SERIAL_TMP
+    echo SSD_SERIAL[$INDEX]=$SERIAL >> $SSD_SERIAL_TMP
     ;;
   esac
 done  
 
 cat $SSD_SERIAL_TMP
 . $SSD_SERIAL_TMP
-rm $SSD_SERIAL_TMP
 
 log got ${#SSD_SERIAL[@]} SSD serials
 
 [ ${#SSD_SERIAL[@]} -ne $N ] && exit 1
+
+rm $SSD_SERIAL_TMP
 
 # unmount camera ssd
 log umount CF

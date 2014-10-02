@@ -2,10 +2,14 @@
 
 Download footage from cameras via esata multiplexers
 
+### Documentation
+
+A detailed documentation can be generated through doxygen. A more general documentation can be consulted on the [wiki](https://github.com/luxigo/elphel-footage_downloader/wiki).
+
 ### Copyright
 
 Copyright (c) 2014 FOXEL SA - [http://foxel.ch](http://foxel.ch)<br />
-This program is part of the FOXEL project <[http://foxel.ch](http://foxel.ch)>.
+elphel-footage_downloader is part of the FOXEL project <[http://foxel.ch](http://foxel.ch)>.
 
 Please read the [COPYRIGHT.md](COPYRIGHT.md) file for more information.
 

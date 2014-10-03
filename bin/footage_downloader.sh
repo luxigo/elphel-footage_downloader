@@ -36,6 +36,11 @@
 
 #set -e
 
+if [ $UID -ne 0 ] ; then
+  echo error: $(basename $0) must be run as root
+  exit 1
+fi
+
 BASE_IP=192.168.0
 MASTER_IP=221
 N=9
@@ -46,10 +51,9 @@ MUX_DONE=0
 SUCCESS=0
 
 SPOOL=/var/spool/elphel
+mkdir -p $SPOOL || exit 1
 
 [ -f /etc/defaults/footage_downloader ] && . /etc/defaults/footage_downloader
-
-mkdir -p $SPOOL || exit 1
 
 [ -n "$DEBUG" ] && set -x
 
@@ -253,7 +257,7 @@ backup() {
 
   # enqueue this mux's next ssd for backup (ignore this step if SINGLE is set because it is a retry)
   if [ "$SINGLE" = "" ] ; then
-    if [ -a $REMOTE_SSD_INDEX -lt ${MUX_MAX_INDEX[$MUX_INDEX]} ] ; then 
+    if [ $REMOTE_SSD_INDEX -lt ${MUX_MAX_INDEX[$MUX_INDEX]} ] ; then 
       echo $MUX_INDEX $((REMOTE_SSD_INDEX+1)) >> $CONNECT_Q_TMP
     else
       # no more ssd for this mux

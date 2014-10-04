@@ -63,7 +63,9 @@ export SCSIHOST_TMP=$(mktemp)
 export MYPID=$BASHPID
 export BACKUP_DONE_TMP=$(mktemp)
 export MUX_DONE_TMP=$(mktemp)
+export QSEQ_TMP=$(mktemp)
 
+echo 0 > $QSEQ_TMP
 echo 0 > $BACKUP_DONE_TMP
 echo 0 > $MUX_DONE_TMP
 
@@ -86,10 +88,10 @@ killtree() {
     exit
 }
 
-macaddr() {                
-  _ADDR=$1                 
+macaddr() {
+  _ADDR=$1
   arp -n $_ADDR | awk '/[0-9a-f]+:/{gsub(":","-",$3);print $3}'
-}                          
+}
 
 umount_cf() {
   HOSTS=$USER_AT_HOST sshall << 'EOF'
@@ -109,7 +111,7 @@ get_local_disk_serial() {
 }
 
 get_hbtl() {
-  grep DEVPATH= $1 | sed -r -n -e 's#.*/([0-9]:[0-9]:[0-9]:[0-9])/.*#\1#' -e T -e 's/:/ /gp' 
+  grep DEVPATH= $1 | sed -r -n -e 's#.*/([0-9]:[0-9]:[0-9]:[0-9])/.*#\1#' -e T -e 's/:/ /gp'
 }
 
 is_mounted() {
@@ -150,7 +152,7 @@ save_scsihost() {
 # read cached scsi address associated with mux index
 get_scsihost() {
   MUX_INDEX=$1
-  grep $MUX_INDEX $SCSIHOST_TMP | sed -r -e 's/^[0-9]+ (.*)/\1/' 
+  grep $MUX_INDEX $SCSIHOST_TMP | sed -r -e 's/^[0-9]+ (.*)/\1/'
 }
 
 # wait udev generated files in spool folder before mounting disk and launching backup in background
@@ -175,8 +177,8 @@ wait_and_backup() {
     # get saved connecting disk info
     DISK_CONNECTING_INFO=($(cat $DISK_CONNECTING_TMP))
     MUX_INDEX=${DISK_CONNECTING_INFO[0]}
-    MUX_REMOTE_SSD_INDEX=${DISK_CONNECTING_INFO[1]} 
-    SINGLE=${DISK_CONNECTING_INFO[2]} 
+    MUX_REMOTE_SSD_INDEX=${DISK_CONNECTING_INFO[1]}
+    SINGLE=${DISK_CONNECTING_INFO[2]}
     DEVICE=$(grep DEVNAME "$UDEVINFO" | cut -f 2 -d '=')
 
     log $MUX_INDEX $MUX_REMOTE_SSD_INDEX $SCSIHOST $SERIAL $DEVICE
@@ -192,7 +194,7 @@ wait_and_backup() {
 
     # set already connected flag
     touch /tmp/${MUX_INDEX}_${MUX_REMOTE_SSD_INDEX}_connected || killtree -KILL $MYPID
-    echo $SCSIHOST $SERIAL $DEVICE > /tmp/${MUX_INDEX}_${MUX_REMOTE_SSD_INDEX}_connected 
+    echo $SCSIHOST $SERIAL $DEVICE > /tmp/${MUX_INDEX}_${MUX_REMOTE_SSD_INDEX}_connected
 
     # launch backup in background
     backup $MUX_INDEX $MUX_REMOTE_SSD_INDEX $SCSIHOST $SERIAL $DEVICE $SINGLE &
@@ -237,14 +239,14 @@ backup() {
   log backuping mux $MUX_INDEX index $REMOTE_SSD_INDEX serial $SERIAL partition ${DEVICE}$PARTNUM
 
   RSYNCDEST=$DEST/mov/$(($(get_ssd_index $SERIAL)+1))
-  rsync -av $MOUNTPOINT/$FILE_PATTERN $RSYNCDEST 2>&1 | logstdout $RSYNCDEST $MOUNTPOINT 
+  rsync -av $MOUNTPOINT/$FILE_PATTERN $RSYNCDEST 2>&1 | logstdout $RSYNCDEST $MOUNTPOINT
   STATUS=$?
 
   log backup_status $STATUS mux ${MUX_INDEX} index ${REMOTE_SSD_INDEX}
 
   # unmount device
   log umount $MOUNTPOINT
-  umount $MOUNTPOINT 
+  umount $MOUNTPOINT
 
   # remove flag
   rm /tmp/${MUX_INDEX}_${REMOTE_SSD_INDEX}_connected || killtree -KILL $MYPID
@@ -262,22 +264,21 @@ backup() {
   touch /tmp/${MUX_INDEX}_${REMOTE_SSD_INDEX}_backuped || killtree -KILL $MYPID
   echo $SCSIHOST $SERIAL $DEVICE $STATUS > /tmp/${MUX_INDEX}_${REMOTE_SSD_INDEX}_backuped
 
-  # enqueue this mux's next ssd for backup (ignore this step if SINGLE is set because it is a retry)
-  if [ "$SINGLE" = "" ] ; then
-    if [ $REMOTE_SSD_INDEX -lt ${MUX_MAX_INDEX[$MUX_INDEX]} ] ; then 
-      echo $MUX_INDEX $((REMOTE_SSD_INDEX+1)) >> $CONNECT_Q_TMP
-    else
-      # no more ssd for this mux
-      echo $((++MUX_DONE)) > $MUX_DONE_TMP
-    fi
-  else
-    # TODO: check here that next ssd has been requested for this mux, or that mux_done is incremented if no ssd left for this mux after the current "single" one
-    echo TODO: check here that next ssd has been requested for this mux, or that mux_done is incremented if no ssd left for this mux after the current "single" one
+  # enqueue this mux's next ssd for backup (ignore this step for retries)
+  if [ "$SINGLE" = "" -a $REMOTE_SSD_INDEX -lt ${MUX_MAX_INDEX[$MUX_INDEX]} ] ; then
+    echo $MUX_INDEX $((REMOTE_SSD_INDEX+1)) >> $CONNECT_Q_TMP
   fi
- set -x
-  # exit when nothing left to do
+
+  # show progression
   [ $STATUS -eq 0 ] && echo $((++BACKUP_DONE)) > $BACKUP_DONE_TMP
-  log backup_done $BACKUP_DONE
+  log backup_done_count $BACKUP_DONE
+
+  if ! is_any_ssd_left_in_queue_for_mux $MUX_INDEX ; then
+    echo $((++MUX_DONE)) > $MUX_DONE_TMP
+  fi
+  log mux_done_count $MUX_DONE
+
+  # exit when nothing left to do
   if [ "$MUX_DONE" = "${#MUXES[@]}" ] ; then
     if [ "$BACKUP_DONE" = "$N" ] ; then
       log exit_status 0
@@ -286,14 +287,22 @@ backup() {
     fi
     killtree -TERM $MYPID yes
   fi
-  set +x
 }
- 
+
+is_any_ssd_left_in_queue_for_mux() {
+   MUX_INDEX=$1
+   QSEQ=$(cat $QSEQ_TMP)
+   tail -n +$((QSEQ+1)) $CONNECT_Q_TMP | cut -f 1 -d ' ' | grep -q -e '^'$MUX'$'
+}
+
 # switch esata connections sequentially reading from $CONNECT_Q_TMP
 connect_q_run() {
-  
+
   tail -f $CONNECT_Q_TMP | while read INDEXES ; do
-    
+
+    # increment queue sequence number
+    $((++QSEQ)) > $QSEQ_TMP
+
     # parse queue request
     INDEXES=($INDEXES)
     MUX_INDEX=${INDEXES[0]}
@@ -433,7 +442,7 @@ get_remote_disk_serial /dev/hda 2>&1 | tee | while read l ; do
     echo SSD_SERIAL[$INDEX]=$SERIAL >> $SSD_SERIAL_TMP
     ;;
   esac
-done  
+done
 
 cat $SSD_SERIAL_TMP
 . $SSD_SERIAL_TMP

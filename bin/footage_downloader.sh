@@ -178,7 +178,7 @@ wait_and_backup() {
     DISK_CONNECTING_INFO=($(cat $DISK_CONNECTING_TMP))
     MUX_INDEX=${DISK_CONNECTING_INFO[0]}
     MUX_REMOTE_SSD_INDEX=${DISK_CONNECTING_INFO[1]}
-    SINGLE=${DISK_CONNECTING_INFO[2]}
+    ISRETRY=${DISK_CONNECTING_INFO[2]}
     DEVICE=$(grep DEVNAME "$UDEVINFO" | cut -f 2 -d '=')
 
     log $MUX_INDEX $MUX_REMOTE_SSD_INDEX $SCSIHOST $SERIAL $DEVICE
@@ -197,7 +197,7 @@ wait_and_backup() {
     echo $SCSIHOST $SERIAL $DEVICE > /tmp/${MUX_INDEX}_${MUX_REMOTE_SSD_INDEX}_connected
 
     # launch backup in background
-    backup $MUX_INDEX $MUX_REMOTE_SSD_INDEX $SCSIHOST $SERIAL $DEVICE $SINGLE &
+    backup $MUX_INDEX $MUX_REMOTE_SSD_INDEX $SCSIHOST $SERIAL $DEVICE $ISRETRY &
 
   done
 }
@@ -209,7 +209,7 @@ backup() {
   SCSIHOST="$3 $4 $5 $6"
   SERIAL=$7
   DEVICE=$8
-  SINGLE=$9
+  ISRETRY=$9
   BACKUP_DONE=$(cat $BACKUP_DONE_TMP)
   MUX_DONE=$(cat $MUX_DONE_TMP)
 
@@ -265,7 +265,7 @@ backup() {
   echo $SCSIHOST $SERIAL $DEVICE $STATUS > /tmp/${MUX_INDEX}_${REMOTE_SSD_INDEX}_backuped
 
   # enqueue this mux's next ssd for backup (ignore this step for retries)
-  if [ "$SINGLE" = "" -a $REMOTE_SSD_INDEX -lt ${MUX_MAX_INDEX[$MUX_INDEX]} ] ; then
+  if [ "$ISRETRY" = "" -a $REMOTE_SSD_INDEX -lt ${MUX_MAX_INDEX[$MUX_INDEX]} ] ; then
     echo $MUX_INDEX $((REMOTE_SSD_INDEX+1)) >> $CONNECT_Q_TMP
   fi
 
@@ -307,11 +307,11 @@ connect_q_run() {
     INDEXES=($INDEXES)
     MUX_INDEX=${INDEXES[0]}
     REMOTE_SSD_INDEX=${INDEXES[1]}
-    SINGLE=${INDEXES[2]}
+    ISRETRY=${INDEXES[2]}
 
     # requeue again if other disk of this mux is already connected
     if [ -f /tmp/${MUX_INDEX}_*_connected ] ; then
-      echo $MUX_INDEX $REMOTE_SSD_INDEX $SINGLE >> $CONNECT_Q_TMP
+      echo $MUX_INDEX $REMOTE_SSD_INDEX $ISRETRY >> $CONNECT_Q_TMP
       sleep 10
       continue
     fi
@@ -326,7 +326,7 @@ connect_q_run() {
       sleep 1
 
       # before requesting disk connection, save connecting disk info
-      echo $MUX_INDEX $REMOTE_SSD_INDEX $SINGLE> $DISK_CONNECTING_TMP
+      echo $MUX_INDEX $REMOTE_SSD_INDEX $ISRETRY> $DISK_CONNECTING_TMP
 
       # request disk connection
       log requesting sata disk mux $MUX_INDEX index $REMOTE_SSD_INDEX
@@ -353,11 +353,11 @@ connect_q_run() {
       [ "$timeout_status" != "124" ] && break
 
       # timeout on retry ? exit
-      [ -n "$SINGLE" ] && killtree -KILL $MYPID
+      [ -n "$ISRETRY" ] && killtree -KILL $MYPID
 
       # re-enqueue this mux/ssd pair for later
       log requeue mux $MUX_INDEX index $REMOTE_SSD_INDEX single
-      echo $MUX_INDEX $REMOTE_SSD_INDEX single >> $CONNECT_Q_TMP
+      echo $MUX_INDEX $REMOTE_SSD_INDEX isretry >> $CONNECT_Q_TMP
 
       # ask next ssd index for this mux
       [ $REMOTE_SSD_INDEX -lt ${MUX_MAX_INDEX[$MUX_INDEX]} ] || break

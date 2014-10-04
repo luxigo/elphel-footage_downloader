@@ -47,8 +47,6 @@ N=9
 
 MUXES=(192.168.0.224 192.168.0.228)
 MUX_MAX_INDEX=(4 5)
-MUX_DONE=0
-SUCCESS=0
 
 SPOOL=/var/spool/elphel
 mkdir -p $SPOOL || exit 1
@@ -63,6 +61,11 @@ export REMOVED_DEVICES=$(mktemp)
 export CONNECT_Q_TMP=$(mktemp)
 export SCSIHOST_TMP=$(mktemp)
 export MYPID=$BASHPID
+export BACKUP_DONE_TMP=$(mktemp)
+export MUX_DONE_TMP=$(mktemp)
+
+echo 0 > $BACKUP_DONE_TMP
+echo 0 > $MUX_DONE_TMP
 
 trap "killtree -9 $MYPID" EXIT SIGINT SIGKILL SIGHUP
 
@@ -74,12 +77,13 @@ usage() {
 killtree() {
     local _pid=$2
     local _sig=$1
-    local dontkillfather=$3
+    local killroot=$3
 #    kill -stop ${_pid} # needed to stop quickly forking parent from producing children between child killing and parent killing
     for _child in $(ps -o pid --no-headers --ppid ${_pid}); do
         killtree ${_sig} ${_child}
     done
-    [ -z "$dontkillfather" ] || kill ${_sig} ${_pid} 2>/dev/null
+    [ -n "$killroot" ] && kill ${_sig} ${_pid} 2>/dev/null
+    exit
 }
 
 macaddr() {                
@@ -204,8 +208,11 @@ backup() {
   SERIAL=$7
   DEVICE=$8
   SINGLE=$9
+  BACKUP_DONE=$(cat $BACKUP_DONE_TMP)
+  MUX_DONE=$(cat $MUX_DONE_TMP)
 
-  # skip if already backuped
+
+  # quit if already backuped - should not happend
   [ -f /tmp/${MUX_INDEX}_${REMOTE_SSD_INDEX}_backuped ] && killtree -KILL $MYPID
 
   log backup $@
@@ -217,13 +224,13 @@ backup() {
   log disabling NCQ $SERIAL ${DEVICE}$PARTNUM
   echo 1 > /sys/block/$(basename $DEVICE)/device/queue_depth
 
-  # repair filesystem
+  # repair filesystem inconditionnaly
   log checking $SERIAL ${DEVICE}$PARTNUM integrity
   fsck -y ${DEVICE}$PARTNUM 2>&1 | logstdout
   FSCK_STATUS=$?
   [ $FSCK_STATUS -gt 1 ] && killtree -KILL $MYPID
 
-  # mount device
+  # mount device read-only
   mount -o ro,sync ${DEVICE}$PARTNUM $MOUNTPOINT || killtree -KILL $MYPID
 
   # actual backup
@@ -261,23 +268,25 @@ backup() {
       echo $MUX_INDEX $((REMOTE_SSD_INDEX+1)) >> $CONNECT_Q_TMP
     else
       # no more ssd for this mux
-      ((++MUX_DONE))
+      echo $((++MUX_DONE)) > $MUX_DONE_TMP
     fi
   else
     # TODO: check here that next ssd has been requested for this mux, or that mux_done is incremented if no ssd left for this mux after the current "single" one
     echo TODO: check here that next ssd has been requested for this mux, or that mux_done is incremented if no ssd left for this mux after the current "single" one
   fi
-
+ set -x
   # exit when nothing left to do
-  [ $STATUS -eq 0 ] && ((++SUCCESS))
-  if [ "$MUX_DONE" = "$N" ] ; then
-    if [ "$SUCCESS" = "$N" ] ; then
+  [ $STATUS -eq 0 ] && echo $((++BACKUP_DONE)) > $BACKUP_DONE_TMP
+  log backup_done $BACKUP_DONE
+  if [ "$MUX_DONE" = "${#MUXES[@]}" ] ; then
+    if [ "$BACKUP_DONE" = "$N" ] ; then
       log exit_status 0
     else
       log exit_status 1
     fi
-    killtree -TERM $MYPID
+    killtree -TERM $MYPID yes
   fi
+  set +x
 }
  
 # switch esata connections sequentially reading from $CONNECT_Q_TMP

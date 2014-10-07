@@ -69,7 +69,7 @@ echo 0 > $QSEQ_TMP
 echo 0 > $BACKUP_DONE_TMP
 echo 0 > $MUX_DONE_TMP
 
-trap "killtree -9 $MYPID" EXIT SIGINT SIGKILL SIGHUP
+trap "killtree -9 $MYPID yes" EXIT SIGINT SIGKILL SIGHUP
 
 usage() {
   echo "usage: $(basename $0) <destination> <file_pattern>"
@@ -82,10 +82,9 @@ killtree() {
     local killroot=$3
 #    kill -stop ${_pid} # needed to stop quickly forking parent from producing children between child killing and parent killing
     for _child in $(ps -o pid --no-headers --ppid ${_pid}); do
-        killtree ${_sig} ${_child}
+        killtree ${_sig} ${_child} yes
     done
     [ -n "$killroot" ] && kill ${_sig} ${_pid} 2>/dev/null
-    exit
 }
 
 macaddr() {
@@ -96,7 +95,9 @@ macaddr() {
 umount_cf() {
   HOSTS=$USER_AT_HOST sshall << 'EOF'
 if grep -q ' /usr/html/CF ' /proc/mounts ; then
+  sync
   umount /usr/html/CF || exit 1
+  sync
 fi
 exit 0
 EOF
@@ -285,7 +286,7 @@ backup() {
     else
       log exit_status 1
     fi
-    killtree -TERM $MYPID yes
+    killtree -KILL $MYPID yes
   fi
 }
 

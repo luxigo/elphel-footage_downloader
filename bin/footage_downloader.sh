@@ -80,7 +80,9 @@ killtree() {
     local _pid=$2
     local _sig=$1
     local killroot=$3
-#    kill -stop ${_pid} # needed to stop quickly forking parent from producing children between child killing and parent killing
+    killroot=yes
+    # stop parents children production between child killing and parent killing
+    [ "${_pid}" != "$$" ] && kill -STOP ${_pid}
     for _child in $(ps -o pid --no-headers --ppid ${_pid}); do
         killtree ${_sig} ${_child} yes
     done
@@ -286,7 +288,7 @@ backup() {
     else
       log exit_status 1
     fi
-    killtree -KILL $MYPID yes
+    killtree -KILL $MYPID
   fi
 }
 

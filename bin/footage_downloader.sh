@@ -346,7 +346,7 @@ connect_q_run() {
       # request disk connection
       log requesting sata disk mux $MUX_INDEX index $REMOTE_SSD_INDEX
       log wget http://${MUXES[$MUX_INDEX]}/103697.php?c:host4=ssd$REMOTE_SSD_INDEX
-      wget -q http://${MUXES[$MUX_INDEX]}/103697.php?c:host4=ssd$REMOTE_SSD_INDEX -O /dev/null || killtree -KILL $MYPID
+      wget -q http://${MUXES[$MUX_INDEX]}/103697.php?c:host4=ssd$REMOTE_SSD_INDEX -O - > /dev/null || killtree -KILL $MYPID
 
       # add scsi device, if previously removed after previous ssd backup for this mux
       hbtl=$(get_scsihost $MUX_INDEX)
@@ -387,7 +387,7 @@ reset_eyesis_ide() {
   log reset eyesis_ide
   for (( i=0 ; $i < ${#MUXES[@]} ; ++i )) do
     log wget http://${MUXES[$i]}/eyesis_ide.php
-    wget -q http://${MUXES[$i]}/eyesis_ide.php -O /dev/null || exit 1
+    wget -q http://${MUXES[$i]}/eyesis_ide.php -O - > /dev/null || exit 1
   done
 }
 

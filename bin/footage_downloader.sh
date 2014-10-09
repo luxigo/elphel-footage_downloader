@@ -55,15 +55,16 @@ SPOOL=/var/spool/elphel
 mkdir -p $SPOOL || exit 1
 [ -n "$DEBUG" ] && set -x
 
-export DISK_CONNECTING_TMP=$(mktemp)
-export SSD_SERIAL_TMP=$(mktemp)
-export REMOVED_DEVICES=$(mktemp)
-export CONNECT_Q_TMP=$(mktemp)
-export SCSIHOST_TMP=$(mktemp)
+TMP=/tmp/footage_downloader/$$
+export DISK_CONNECTING_TMP=$(mktemp --tmpdir=$TMP)
+export SSD_SERIAL_TMP=$(mktemp --tmpdir=$TMP)
+export REMOVED_DEVICES=$(mktemp --tmpdir=$TMP)
+export CONNECT_Q_TMP=$(mktemp --tmpdir=$TMP)
+export SCSIHOST_TMP=$(mktemp --tmpdir=$TMP)
 export MYPID=$BASHPID
-export BACKUP_DONE_TMP=$(mktemp)
-export MUX_DONE_TMP=$(mktemp)
-export QSEQ_TMP=$(mktemp)
+export BACKUP_DONE_TMP=$(mktemp --tmpdir=$TMP)
+export MUX_DONE_TMP=$(mktemp --tmpdir=$TMP)
+export QSEQ_TMP=$(mktemp --tmpdir=$TMP)
 
 echo 0 > $QSEQ_TMP
 echo 0 > $BACKUP_DONE_TMP
@@ -94,7 +95,7 @@ killtree() {
     local killroot=$3
     killroot=yes
     # stop parents children production between child killing and parent killing
-    [ "${_pid}" != "$$" ] && kill -STOP ${_pid}
+    #[ "${_pid}" != "$MYPID" ] && kill -STOP ${_pid}
     for _child in $(ps -o pid --no-headers --ppid ${_pid}); do
         killtree ${_sig} ${_child} yes
     done
@@ -202,14 +203,14 @@ wait_and_backup() {
     save_scsihost $MUX_INDEX $SCSIHOST
 
     # if disk is already connected, ignore
-    [ -f /tmp/${MUX_INDEX}_${MUX_REMOTE_SSD_INDEX}_connected ] && continue
+    [ -f $TMP/${MUX_INDEX}_${MUX_REMOTE_SSD_INDEX}_connected ] && continue
 
     # unpause connect queue
-    touch /tmp/${MUX_INDEX}_${MUX_REMOTE_SSD_INDEX}_connecting || killtree -KILL $MYPID
+    touch $TMP/${MUX_INDEX}_${MUX_REMOTE_SSD_INDEX}_connecting || killtree -KILL $MYPID
 
     # set already connected flag
-    touch /tmp/${MUX_INDEX}_${MUX_REMOTE_SSD_INDEX}_connected || killtree -KILL $MYPID
-    echo $SCSIHOST $SERIAL $DEVICE > /tmp/${MUX_INDEX}_${MUX_REMOTE_SSD_INDEX}_connected
+    touch $TMP/${MUX_INDEX}_${MUX_REMOTE_SSD_INDEX}_connected || killtree -KILL $MYPID
+    echo $SCSIHOST $SERIAL $DEVICE > $TMP/${MUX_INDEX}_${MUX_REMOTE_SSD_INDEX}_connected
 
     # launch backup in background
     backup $MUX_INDEX $MUX_REMOTE_SSD_INDEX $SCSIHOST $SERIAL $DEVICE $ISRETRY &
@@ -230,7 +231,7 @@ backup() {
 
 
   # quit if already backuped - should not happend
-  [ -f /tmp/${MUX_INDEX}_${REMOTE_SSD_INDEX}_backuped ] && killtree -KILL $MYPID
+  [ -f $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_backuped ] && killtree -KILL $MYPID
 
   log backup $@
   PARTNUM=1
@@ -264,7 +265,7 @@ backup() {
   umount $MOUNTPOINT
 
   # remove flag
-  rm /tmp/${MUX_INDEX}_${REMOTE_SSD_INDEX}_connected || killtree -KILL $MYPID
+  rm $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_connected || killtree -KILL $MYPID
 
   # sync filesystems
   log syncing
@@ -276,8 +277,8 @@ backup() {
   echo "scsi remove-single-device $SCSIHOST" | tee /proc/scsi/scsi 2>&1 | logstdout
 
   # set backuped flag
-  touch /tmp/${MUX_INDEX}_${REMOTE_SSD_INDEX}_backuped || killtree -KILL $MYPID
-  echo $SCSIHOST $SERIAL $DEVICE $STATUS > /tmp/${MUX_INDEX}_${REMOTE_SSD_INDEX}_backuped
+  touch $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_backuped || killtree -KILL $MYPID
+  echo $SCSIHOST $SERIAL $DEVICE $STATUS > $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_backuped
 
   # enqueue this mux's next ssd for backup (ignore this step for retries)
   if [ "$ISRETRY" = "" -a $REMOTE_SSD_INDEX -lt ${MUX_MAX_INDEX[$MUX_INDEX]} ] ; then
@@ -325,7 +326,7 @@ connect_q_run() {
     ISRETRY=${INDEXES[2]}
 
     # requeue again if other disk of this mux is already connected
-    if [ -f /tmp/${MUX_INDEX}_*_connected ] ; then
+    if [ -f $TMP/${MUX_INDEX}_*_connected ] ; then
       echo $MUX_INDEX $REMOTE_SSD_INDEX $ISRETRY >> $CONNECT_Q_TMP
       sleep 10
       continue
@@ -334,8 +335,8 @@ connect_q_run() {
     while true ; do
 
       # before requesting disk connection, setup inotifywait and timemout to pause queue until disk is connected or timeout occurs
-      touch /tmp/${MUX_INDEX}_${REMOTE_SSD_INDEX}_connecting || killtree -KILL $MYPID
-      timeout -k 10 30 inotifywait -e close_write /tmp/${MUX_INDEX}_${REMOTE_SSD_INDEX}_connecting &
+      touch $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_connecting || killtree -KILL $MYPID
+      timeout -k 10 30 inotifywait -e close_write $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_connecting &
       TIMEOUTPID=$!
       # TODO wait for "watches established" instead of sleep 1
       sleep 1
@@ -362,7 +363,7 @@ connect_q_run() {
 
       log timeout status $timeout_status wating for mux $MUX_INDEX disk $REMOTE_SSD_INDEX
 
-      rm /tmp/${MUX_INDEX}_${REMOTE_SSD_INDEX}_connecting
+      rm $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_connecting
 
       # exit loop if there was no timeout
       [ "$timeout_status" != "124" ] && break
@@ -476,9 +477,8 @@ rm $SSD_SERIAL_TMP
 log umount CF
 umount_all
 
-rm /tmp/*_backuped 2> /dev/null
-rm /tmp/*_connected 2> /dev/null
-rm /tmp/*_connecting 2> /dev/null
+mkdir -p $TMP || exit
+rm $TMP/* 2> /dev/null
 
 # run backgroud task waiting for disks and launching backups
 wait_and_backup &

@@ -71,6 +71,18 @@ echo 0 > $MUX_DONE_TMP
 
 trap "killtree -9 $MYPID yes" EXIT SIGINT SIGKILL SIGHUP
 
+assertcommands() {
+  while [ $# -ne 0 ] ; do
+    local CMD=$1
+    shift
+    [ -z "$(which $CMD)" ] && echo command $CMD not found && exit 1
+  done
+}
+
+checkdependencies() {
+  assertcommands fsck rsync inotifywait arp wget ssh sshall
+}
+
 usage() {
   echo "usage: $(basename $0) <destination> <file_pattern>"
   exit $1
@@ -396,6 +408,8 @@ umount_all() {
   done
 }
 
+########### main script
+
 SCSIHOST=()
 
 [ -z "$DESTINATION" ] && DESTINATION=$1
@@ -404,6 +418,8 @@ SCSIHOST=()
 for opt in $@ ; do
   [ "$opt" = "-h" ] && usage 0
 done
+
+checkdependencies
 
 if [ -z "$DESTINATION" ] ; then
   usage 1

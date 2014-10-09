@@ -316,7 +316,7 @@ connect_q_run() {
   tail -f $CONNECT_Q_TMP | while read INDEXES ; do
 
     # increment queue sequence number
-    $((++QSEQ)) > $QSEQ_TMP
+    echo $((++QSEQ)) > $QSEQ_TMP
 
     # parse queue request
     INDEXES=($INDEXES)

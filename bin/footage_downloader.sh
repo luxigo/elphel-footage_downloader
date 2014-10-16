@@ -180,7 +180,7 @@ backup() {
   FSCK_STATUS=$?
   [ $FSCK_STATUS -gt 1 ] && killtree -KILL $MYPID
   mount -o ro,sync ${DEVICE}$PARTNUM $MOUNTPOINT || killtree -KILL $MYPID
-  RSYNCDEST=$DEST/mov/$(($(get_ssd_index $SERIAL)+1))
+  RSYNCDEST=$DEST/rsync/$(($(get_ssd_index $SERIAL)+1))
   log backuping mux $MUX_INDEX index $REMOTE_SSD_INDEX serial $SERIAL partition ${DEVICE}$PARTNUM
   rsync -av $MOUNTPOINT/$FILE_PATTERN $RSYNCDEST 2>&1 | logstdout $RSYNCDEST $MOUNTPOINT 
   STATUS=$?
@@ -296,7 +296,7 @@ MACADDR=$(macaddr $BASE_IP.$MASTER_IP)
 
 DEST="$DESTINATION/$MACADDR"
 
-mkdir -p "$DEST/mov" || exit 1
+mkdir -p "$DEST/rsync" || exit 1
 
 for (( i=0 ; $i < $N ; ++i )) ; do
   USER_AT_HOST="$USER_AT_HOST "root@$BASE_IP.$((MASTER_IP + i))

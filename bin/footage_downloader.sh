@@ -55,21 +55,6 @@ SPOOL=/var/spool/elphel
 mkdir -p $SPOOL || exit 1
 [ -n "$DEBUG" ] && set -x
 
-TMP=/tmp/footage_downloader/$$
-export DISK_CONNECTING_TMP=$(mktemp --tmpdir=$TMP)
-export SSD_SERIAL_TMP=$(mktemp --tmpdir=$TMP)
-export REMOVED_DEVICES=$(mktemp --tmpdir=$TMP)
-export CONNECT_Q_TMP=$(mktemp --tmpdir=$TMP)
-export SCSIHOST_TMP=$(mktemp --tmpdir=$TMP)
-export MYPID=$BASHPID
-export BACKUP_DONE_TMP=$(mktemp --tmpdir=$TMP)
-export MUX_DONE_TMP=$(mktemp --tmpdir=$TMP)
-export QSEQ_TMP=$(mktemp --tmpdir=$TMP)
-
-echo 0 > $QSEQ_TMP
-echo 0 > $BACKUP_DONE_TMP
-echo 0 > $MUX_DONE_TMP
-
 trap "killtree -9 $MYPID yes" EXIT SIGINT SIGKILL SIGHUP
 
 assertcommands() {
@@ -155,6 +140,14 @@ get_ssd_index() {
       break
     fi
   done
+}
+
+modtime() {
+  expr $(date +%s) - $(stat -c %Y "$1")
+}
+
+get_camera_uptime() {
+  ssh root@$BASE_IP.$MASTER_IP cat /proc/uptime | cut -f 1 -d '.'
 }
 
 # cache scsi address associated with mux index
@@ -260,7 +253,8 @@ backup() {
 
   # unmount device
   log umount $MOUNTPOINT
-  umount $MOUNTPOINT
+  sync
+  umount ${DEVICE}$PARTNUM || umount -f ${DEVICE}$PARTNUM
 
   # remove flag
   rm $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_connected || killtree -KILL $MYPID
@@ -429,6 +423,34 @@ ping -w 5 -c 1 $BASE_IP.$MASTER_IP > /dev/null || exit 1
 MACADDR=$(macaddr $BASE_IP.$MASTER_IP)
 [ -z "$MACADDR" ] && exit 1
 
+TMP=/tmp/footage_downloader/$MACADDR
+
+export DISK_CONNECTING_TMP=$(mktemp --tmpdir=$TMP/$$)
+export SSD_SERIAL_TMP=$(mktemp --tmpdir=$TMP/$$)
+export REMOVED_DEVICES=$(mktemp --tmpdir=$TMP/$$)
+export CONNECT_Q_TMP=$(mktemp --tmpdir=$TMP/$$)
+export MYPID=$BASHPID
+export BACKUP_DONE_TMP=$(mktemp --tmpdir=$TMP/$$)
+export MUX_DONE_TMP=$(mktemp --tmpdir=$TMP/$$)
+export QSEQ_TMP=$(mktemp --tmpdir=$TMP/$$)
+
+echo 0 > $QSEQ_TMP
+echo 0 > $BACKUP_DONE_TMP
+echo 0 > $MUX_DONE_TMP
+
+CAMERA_UPTIME=$(get_camera_uptime) 
+[ -z "$CAMERA_UPTIME" ] && exit 1
+
+# clear scsi hosts cache if modification time older than camera uptime
+export SCSIHOST_TMP=$TMP/scsihosts
+if [ -f $SCSIHOST_TMP ] ; then
+  if [ $CAMERA_UPTIME -lt $(modtime $SCSIHOST_TMP) ] ; then
+    echo -n > $SCSIHOST_TMP
+  fi
+else
+  touch $SCSIHOST_TMP
+fi
+
 # set destination folder
 DEST="$DESTINATION/$MACADDR"
 
@@ -446,6 +468,7 @@ export SSD_SERIAL=()
 get_remote_disk_serial /dev/hda 2>&1 | tee | while read l ; do
   msg=($l)
   [ ${msg[0]} = "sshall:" ] || continue
+  [ ${msg[2]} = "stderr" ] && log get_remote_disk_serial: $l
   LOGIN=${msg[1]}
   [ -z "$LOGIN" ] && log get_remote_disk_serial: $l && killtree -KILL $MYPID
   IP=$(echo $LOGIN | sed -r -n -e 's/.*@[0-9]+\.[0-9]+\.[0-9]+\.([0-9]+).*/\1/p')
@@ -476,9 +499,6 @@ rm $SSD_SERIAL_TMP
 log umount CF
 umount_all
 
-mkdir -p $TMP || exit
-rm $TMP/* 2> /dev/null
-
 # run backgroud task waiting for disks and launching backups
 wait_and_backup &
 
@@ -495,4 +515,6 @@ wait
 
 log resetting eyesis ide
 reset_eyesis_ide || exit 1
+
+rm $TMP/$$ -r 2> /dev/null
 

@@ -424,6 +424,7 @@ MACADDR=$(macaddr $BASE_IP.$MASTER_IP)
 [ -z "$MACADDR" ] && exit 1
 
 TMP=/tmp/footage_downloader/$MACADDR
+mkdir -p $TMP/$$
 
 export DISK_CONNECTING_TMP=$(mktemp --tmpdir=$TMP/$$)
 export SSD_SERIAL_TMP=$(mktemp --tmpdir=$TMP/$$)

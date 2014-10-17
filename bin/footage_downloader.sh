@@ -272,19 +272,20 @@ backup() {
   touch $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_backuped || killtree -KILL $MYPID
   echo $SCSIHOST $SERIAL $DEVICE $STATUS > $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_backuped
 
-  # enqueue this mux's next ssd for backup (ignore this step for retries)
-  if [ "$ISRETRY" = "" -a $REMOTE_SSD_INDEX -lt ${MUX_MAX_INDEX[$MUX_INDEX]} ] ; then
-    echo $MUX_INDEX $((REMOTE_SSD_INDEX+1)) >> $CONNECT_Q_TMP
-  fi
-
   # show progression
   [ $STATUS -eq 0 ] && echo $((++BACKUP_DONE)) > $BACKUP_DONE_TMP
   log backup_done_count $BACKUP_DONE
 
-  if ! is_any_ssd_left_in_queue_for_mux $MUX_INDEX ; then
-    echo $((++MUX_DONE)) > $MUX_DONE_TMP
+  # enqueue this mux's next ssd for backup (ignore this step for retries)
+  if [ "$ISRETRY" = "" -a $REMOTE_SSD_INDEX -lt ${MUX_MAX_INDEX[$MUX_INDEX]} ] ; then
+    echo $MUX_INDEX $((REMOTE_SSD_INDEX+1)) >> $CONNECT_Q_TMP
+  else
+    # check mux done
+    if ! is_any_ssd_left_in_queue_for_mux $MUX_INDEX ; then
+      echo $((++MUX_DONE)) > $MUX_DONE_TMP
+    fi
+    log mux_done_count $MUX_DONE
   fi
-  log mux_done_count $MUX_DONE
 
   # exit when nothing left to do
   if [ "$MUX_DONE" = "${#MUXES[@]}" ] ; then
@@ -300,7 +301,7 @@ backup() {
 is_any_ssd_left_in_queue_for_mux() {
    MUX_INDEX=$1
    QSEQ=$(cat $QSEQ_TMP)
-   tail -n +$((QSEQ+1)) $CONNECT_Q_TMP | cut -f 1 -d ' ' | grep -q -e '^'$MUX'$'
+   tail -n +$QSEQ $CONNECT_Q_TMP | cut -f 1 -d ' ' | grep -q -e '^'$MUX'$'
 }
 
 # switch esata connections sequentially reading from $CONNECT_Q_TMP
@@ -423,27 +424,28 @@ ping -w 5 -c 1 $BASE_IP.$MASTER_IP > /dev/null || exit 1
 MACADDR=$(macaddr $BASE_IP.$MASTER_IP)
 [ -z "$MACADDR" ] && exit 1
 
-TMP=/tmp/footage_downloader/$MACADDR
-mkdir -p $TMP/$$
+TMP=/tmp/footage_downloader/$MACADDR/$$
+mkdir -p $TMP
 
-export DISK_CONNECTING_TMP=$(mktemp --tmpdir=$TMP/$$)
-export SSD_SERIAL_TMP=$(mktemp --tmpdir=$TMP/$$)
-export REMOVED_DEVICES=$(mktemp --tmpdir=$TMP/$$)
-export CONNECT_Q_TMP=$(mktemp --tmpdir=$TMP/$$)
+export DISK_CONNECTING_TMP=$(mktemp --tmpdir=$TMP)
+export SSD_SERIAL_TMP=$(mktemp --tmpdir=$TMP)
+export REMOVED_DEVICES=$(mktemp --tmpdir=$TMP)
+export CONNECT_Q_TMP=$(mktemp --tmpdir=$TMP)
 export MYPID=$BASHPID
-export BACKUP_DONE_TMP=$(mktemp --tmpdir=$TMP/$$)
-export MUX_DONE_TMP=$(mktemp --tmpdir=$TMP/$$)
-export QSEQ_TMP=$(mktemp --tmpdir=$TMP/$$)
+export BACKUP_DONE_TMP=$(mktemp --tmpdir=$TMP)
+export MUX_DONE_TMP=$(mktemp --tmpdir=$TMP)
+export QSEQ_TMP=$(mktemp --tmpdir=$TMP)
 
 echo 0 > $QSEQ_TMP
 echo 0 > $BACKUP_DONE_TMP
 echo 0 > $MUX_DONE_TMP
 
+log get camera uptime
 CAMERA_UPTIME=$(get_camera_uptime) 
 [ -z "$CAMERA_UPTIME" ] && exit 1
 
 # clear scsi hosts cache if modification time older than camera uptime
-export SCSIHOST_TMP=$TMP/scsihosts
+export SCSIHOST_TMP=$TMP/../scsihosts
 if [ -f $SCSIHOST_TMP ] ; then
   if [ $CAMERA_UPTIME -lt $(modtime $SCSIHOST_TMP) ] ; then
     echo -n > $SCSIHOST_TMP

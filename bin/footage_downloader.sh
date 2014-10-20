@@ -310,6 +310,16 @@ is_any_ssd_left_in_queue_for_mux() {
    tail -n +$((QSEQ+1)) $CONNECT_Q_TMP | cut -f 1 -d ' ' | grep -q -e '^'$MUX'$'
 }
 
+wait_watches_established() {
+  local INOTIFY_STDERR=$1
+  local msg
+  tail -f $INOTIFY_STDERR | while read msg ; do
+    echo $msg | logstdout
+    [ "$msg" =~ "Watches established" ] && break
+  done
+  rm $INOTIFY_STDERR
+}
+
 # switch esata connections sequentially reading from $CONNECT_Q_TMP
 connect_q_run() {
 
@@ -335,10 +345,11 @@ connect_q_run() {
 
       # before requesting disk connection, setup inotifywait and timemout to pause queue until disk is connected or timeout occurs
       touch /tmp/${MUX_INDEX}_${REMOTE_SSD_INDEX}_connecting || killtree -KILL $MYPID
-      timeout -k 10 30 inotifywait -e close_write /tmp/${MUX_INDEX}_${REMOTE_SSD_INDEX}_connecting &
+
+      INOTIFY_STDERR=$(mktemp)
+      timeout -k 10 30 inotifywait -e close_write /tmp/${MUX_INDEX}_${REMOTE_SSD_INDEX}_connecting 2> $INOTIFY_STDERR &
       TIMEOUTPID=$!
-      # TODO wait for "watches established" instead of sleep 1
-      sleep 1
+      wait_watches_established $INOTIFY_STDERR
 
       # before requesting disk connection, save connecting disk info
       echo $MUX_INDEX $REMOTE_SSD_INDEX $ISRETRY> $DISK_CONNECTING_TMP

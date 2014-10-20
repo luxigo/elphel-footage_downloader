@@ -443,6 +443,7 @@ echo 0 > $MUX_DONE_TMP
 log get camera uptime
 CAMERA_UPTIME=$(get_camera_uptime) 
 [ -z "$CAMERA_UPTIME" ] && exit 1
+[ $CAMERA_UPTIME -lt 120 ] && sleep $((120-CAMERA_UPTIME))
 
 # clear scsi hosts cache if modification time older than camera uptime
 export SCSIHOST_TMP=$TMP/../scsihosts

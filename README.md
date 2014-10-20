@@ -4,7 +4,7 @@ Download footage from cameras via esata multiplexers
 
 ### Documentation
 
-A detailed documentation can be generated through doxygen. A more general documentation can be consulted on the [wiki](https://github.com/luxigo/elphel-footage_downloader/wiki).
+Documentation can be consulted on the [wiki](https://github.com/luxigo/elphel-footage_downloader/wiki).
 
 ### Copyright
 

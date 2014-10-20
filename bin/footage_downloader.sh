@@ -55,20 +55,6 @@ SPOOL=/var/spool/elphel
 mkdir -p $SPOOL || exit 1
 [ -n "$DEBUG" ] && set -x
 
-export DISK_CONNECTING_TMP=$(mktemp)
-export SSD_SERIAL_TMP=$(mktemp)
-export REMOVED_DEVICES=$(mktemp)
-export CONNECT_Q_TMP=$(mktemp)
-export SCSIHOST_TMP=$(mktemp)
-export MYPID=$BASHPID
-export BACKUP_DONE_TMP=$(mktemp)
-export MUX_DONE_TMP=$(mktemp)
-export QSEQ_TMP=$(mktemp)
-
-echo 0 > $QSEQ_TMP
-echo 0 > $BACKUP_DONE_TMP
-echo 0 > $MUX_DONE_TMP
-
 trap "killtree -9 $MYPID yes" EXIT SIGINT SIGKILL SIGHUP
 
 assertcommands() {
@@ -94,7 +80,7 @@ killtree() {
     local killroot=$3
     killroot=yes
     # stop parents children production between child killing and parent killing
-    [ "${_pid}" != "$$" ] && kill -STOP ${_pid}
+    #[ "${_pid}" != "$MYPID" ] && kill -STOP ${_pid}
     for _child in $(ps -o pid --no-headers --ppid ${_pid}); do
         killtree ${_sig} ${_child} yes
     done
@@ -156,6 +142,14 @@ get_ssd_index() {
   done
 }
 
+modtime() {
+  expr $(date +%s) - $(stat -c %Y "$1")
+}
+
+get_camera_uptime() {
+  ssh root@$BASE_IP.$MASTER_IP cat /proc/uptime | cut -f 1 -d '.'
+}
+
 # cache scsi address associated with mux index
 save_scsihost() {
   MUX_INDEX=$1
@@ -202,14 +196,14 @@ wait_and_backup() {
     save_scsihost $MUX_INDEX $SCSIHOST
 
     # if disk is already connected, ignore
-    [ -f /tmp/${MUX_INDEX}_${MUX_REMOTE_SSD_INDEX}_connected ] && continue
+    [ -f $TMP/${MUX_INDEX}_${MUX_REMOTE_SSD_INDEX}_connected ] && continue
 
     # unpause connect queue
-    touch /tmp/${MUX_INDEX}_${MUX_REMOTE_SSD_INDEX}_connecting || killtree -KILL $MYPID
+    touch $TMP/${MUX_INDEX}_${MUX_REMOTE_SSD_INDEX}_connecting || killtree -KILL $MYPID
 
     # set already connected flag
-    touch /tmp/${MUX_INDEX}_${MUX_REMOTE_SSD_INDEX}_connected || killtree -KILL $MYPID
-    echo $SCSIHOST $SERIAL $DEVICE > /tmp/${MUX_INDEX}_${MUX_REMOTE_SSD_INDEX}_connected
+    touch $TMP/${MUX_INDEX}_${MUX_REMOTE_SSD_INDEX}_connected || killtree -KILL $MYPID
+    echo $SCSIHOST $SERIAL $DEVICE > $TMP/${MUX_INDEX}_${MUX_REMOTE_SSD_INDEX}_connected
 
     # launch backup in background
     backup $MUX_INDEX $MUX_REMOTE_SSD_INDEX $SCSIHOST $SERIAL $DEVICE $ISRETRY &
@@ -230,7 +224,7 @@ backup() {
 
 
   # quit if already backuped - should not happend
-  [ -f /tmp/${MUX_INDEX}_${REMOTE_SSD_INDEX}_backuped ] && killtree -KILL $MYPID
+  [ -f $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_backuped ] && killtree -KILL $MYPID
 
   log backup $@
   PARTNUM=1
@@ -250,10 +244,8 @@ backup() {
   # mount device read-only
   mount -o ro,sync ${DEVICE}$PARTNUM $MOUNTPOINT || killtree -KILL $MYPID
 
-  # actual backup
   log backuping mux $MUX_INDEX index $REMOTE_SSD_INDEX serial $SERIAL partition ${DEVICE}$PARTNUM
-
-  RSYNCDEST=$DEST/mov/$(($(get_ssd_index $SERIAL)+1))
+  RSYNCDEST=$DEST/rsync/$(($(get_ssd_index $SERIAL)+1))
   rsync -av $MOUNTPOINT/$FILE_PATTERN $RSYNCDEST 2>&1 | logstdout $RSYNCDEST $MOUNTPOINT
   STATUS=$?
 
@@ -261,10 +253,11 @@ backup() {
 
   # unmount device
   log umount $MOUNTPOINT
-  umount $MOUNTPOINT
+  sync
+  umount ${DEVICE}$PARTNUM || umount -f ${DEVICE}$PARTNUM
 
   # remove flag
-  rm /tmp/${MUX_INDEX}_${REMOTE_SSD_INDEX}_connected || killtree -KILL $MYPID
+  rm $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_connected || killtree -KILL $MYPID
 
   # sync filesystems
   log syncing
@@ -276,22 +269,23 @@ backup() {
   echo "scsi remove-single-device $SCSIHOST" | tee /proc/scsi/scsi 2>&1 | logstdout
 
   # set backuped flag
-  touch /tmp/${MUX_INDEX}_${REMOTE_SSD_INDEX}_backuped || killtree -KILL $MYPID
-  echo $SCSIHOST $SERIAL $DEVICE $STATUS > /tmp/${MUX_INDEX}_${REMOTE_SSD_INDEX}_backuped
-
-  # enqueue this mux's next ssd for backup (ignore this step for retries)
-  if [ "$ISRETRY" = "" -a $REMOTE_SSD_INDEX -lt ${MUX_MAX_INDEX[$MUX_INDEX]} ] ; then
-    echo $MUX_INDEX $((REMOTE_SSD_INDEX+1)) >> $CONNECT_Q_TMP
-  fi
+  touch $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_backuped || killtree -KILL $MYPID
+  echo $SCSIHOST $SERIAL $DEVICE $STATUS > $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_backuped
 
   # show progression
   [ $STATUS -eq 0 ] && echo $((++BACKUP_DONE)) > $BACKUP_DONE_TMP
   log backup_done_count $BACKUP_DONE
 
-  if ! is_any_ssd_left_in_queue_for_mux $MUX_INDEX ; then
-    echo $((++MUX_DONE)) > $MUX_DONE_TMP
+  # enqueue this mux's next ssd for backup (ignore this step for retries)
+  if [ "$ISRETRY" = "" -a $REMOTE_SSD_INDEX -lt ${MUX_MAX_INDEX[$MUX_INDEX]} ] ; then
+    echo $MUX_INDEX $((REMOTE_SSD_INDEX+1)) >> $CONNECT_Q_TMP
+  else
+    # check mux done
+    if ! is_any_ssd_left_in_queue_for_mux $MUX_INDEX ; then
+      echo $((++MUX_DONE)) > $MUX_DONE_TMP
+    fi
+    log mux_done_count $MUX_DONE
   fi
-  log mux_done_count $MUX_DONE
 
   # exit when nothing left to do
   if [ "$MUX_DONE" = "${#MUXES[@]}" ] ; then
@@ -307,7 +301,7 @@ backup() {
 is_any_ssd_left_in_queue_for_mux() {
    MUX_INDEX=$1
    QSEQ=$(cat $QSEQ_TMP)
-   tail -n +$((QSEQ+1)) $CONNECT_Q_TMP | cut -f 1 -d ' ' | grep -q -e '^'$MUX'$'
+   tail -n +$QSEQ $CONNECT_Q_TMP | cut -f 1 -d ' ' | grep -q -e '^'$MUX'$'
 }
 
 wait_watches_established() {
@@ -335,7 +329,7 @@ connect_q_run() {
     ISRETRY=${INDEXES[2]}
 
     # requeue again if other disk of this mux is already connected
-    if [ -f /tmp/${MUX_INDEX}_*_connected ] ; then
+    if [ -f $TMP/${MUX_INDEX}_*_connected ] ; then
       echo $MUX_INDEX $REMOTE_SSD_INDEX $ISRETRY >> $CONNECT_Q_TMP
       sleep 10
       continue
@@ -373,7 +367,7 @@ connect_q_run() {
 
       log timeout status $timeout_status wating for mux $MUX_INDEX disk $REMOTE_SSD_INDEX
 
-      rm /tmp/${MUX_INDEX}_${REMOTE_SSD_INDEX}_connecting
+      rm $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_connecting
 
       # exit loop if there was no timeout
       [ "$timeout_status" != "124" ] && break
@@ -441,9 +435,41 @@ ping -w 5 -c 1 $BASE_IP.$MASTER_IP > /dev/null || exit 1
 MACADDR=$(macaddr $BASE_IP.$MASTER_IP)
 [ -z "$MACADDR" ] && exit 1
 
+TMP=/tmp/footage_downloader/$MACADDR/$$
+mkdir -p $TMP
+
+export DISK_CONNECTING_TMP=$(mktemp --tmpdir=$TMP)
+export SSD_SERIAL_TMP=$(mktemp --tmpdir=$TMP)
+export REMOVED_DEVICES=$(mktemp --tmpdir=$TMP)
+export CONNECT_Q_TMP=$(mktemp --tmpdir=$TMP)
+export MYPID=$BASHPID
+export BACKUP_DONE_TMP=$(mktemp --tmpdir=$TMP)
+export MUX_DONE_TMP=$(mktemp --tmpdir=$TMP)
+export QSEQ_TMP=$(mktemp --tmpdir=$TMP)
+
+echo 0 > $QSEQ_TMP
+echo 0 > $BACKUP_DONE_TMP
+echo 0 > $MUX_DONE_TMP
+
+log get camera uptime
+CAMERA_UPTIME=$(get_camera_uptime) 
+[ -z "$CAMERA_UPTIME" ] && exit 1
+[ $CAMERA_UPTIME -lt 120 ] && sleep $((120-CAMERA_UPTIME))
+
+# clear scsi hosts cache if modification time older than camera uptime
+export SCSIHOST_TMP=$TMP/../scsihosts
+if [ -f $SCSIHOST_TMP ] ; then
+  if [ $CAMERA_UPTIME -lt $(modtime $SCSIHOST_TMP) ] ; then
+    echo -n > $SCSIHOST_TMP
+  fi
+else
+  touch $SCSIHOST_TMP
+fi
+
 # set destination folder
 DEST="$DESTINATION/$MACADDR"
-mkdir -p "$DEST/mov" || exit 1
+
+mkdir -p "$DEST/rsync" || exit 1
 
 # build sshall login list
 for (( i=0 ; $i < $N ; ++i )) ; do
@@ -457,6 +483,7 @@ export SSD_SERIAL=()
 get_remote_disk_serial /dev/hda 2>&1 | tee | while read l ; do
   msg=($l)
   [ ${msg[0]} = "sshall:" ] || continue
+  [ ${msg[2]} = "stderr" ] && log get_remote_disk_serial: $l
   LOGIN=${msg[1]}
   [ -z "$LOGIN" ] && log get_remote_disk_serial: $l && killtree -KILL $MYPID
   IP=$(echo $LOGIN | sed -r -n -e 's/.*@[0-9]+\.[0-9]+\.[0-9]+\.([0-9]+).*/\1/p')
@@ -487,10 +514,6 @@ rm $SSD_SERIAL_TMP
 log umount CF
 umount_all
 
-rm /tmp/*_backuped 2> /dev/null
-rm /tmp/*_connected 2> /dev/null
-rm /tmp/*_connecting 2> /dev/null
-
 # run backgroud task waiting for disks and launching backups
 wait_and_backup &
 
@@ -507,4 +530,6 @@ wait
 
 log resetting eyesis ide
 reset_eyesis_ide || exit 1
+
+rm $TMP/$$ -r 2> /dev/null
 

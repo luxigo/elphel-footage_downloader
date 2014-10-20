@@ -74,10 +74,25 @@ usage() {
   exit $1
 }
 
+wait_fsck() {
+  while killall -0 fsck 2>/dev/null || killall -0 fsck.ext2  2>/dev/null ; do
+    sleep 10
+  done
+}
+
+# kill child processes, and optionally the root process
 killtree() {
     local _pid=$2
     local _sig=$1
     local killroot=$3
+
+    # avoid fsck race condition
+    echo 1 > $QUITTING_TMP
+    sleep 5
+
+    # dont quit during fsck
+    wait_fsck
+
     killroot=yes
     # stop parents children production between child killing and parent killing
     #[ "${_pid}" != "$MYPID" ] && kill -STOP ${_pid}
@@ -212,13 +227,20 @@ wait_and_backup() {
 }
 
 repair_filesystem() {
+
+  # if process is exiting, just wait for kill
+  while [ "$(cat $QUITTING_TMP)" -eq 1 ] ; do sleep 100000 ; done
+
+  # else repair filesystem inconditionnaly
   log checking $SERIAL ${DEVICE}$PARTNUM integrity
-  fsck -y ${DEVICE}$PARTNUM 2>&1 | logstdout
+  fsck -y ${DEVICE}$PARTNUM
+
   return $?
 }
 
 # backup filesystem then enqueue next ssd backup for this mux
 backup() {
+
   MUX_INDEX=$1
   REMOTE_SSD_INDEX=$2
   SCSIHOST="$3 $4 $5 $6"
@@ -227,7 +249,6 @@ backup() {
   ISRETRY=$9
   BACKUP_DONE=$(cat $BACKUP_DONE_TMP)
   MUX_DONE=$(cat $MUX_DONE_TMP)
-
 
   # quit if already backuped - should not happend
   [ -f $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_backuped ] && killtree -KILL $MYPID
@@ -245,7 +266,7 @@ backup() {
   # mount device read-only
   if [ ! mount -o ro,sync ${DEVICE}$PARTNUM $MOUNTPOINT ] ; then
     # mount failed, repair filesystem inconditionnaly
-    repair_filesystem
+    repair_filesystem | logstdout
     [ $? -gt 1 ] && killtree -KILL $MYPID
     # try to mount again or quit
     [ mount -o ro,sync ${DEVICE}$PARTNUM $MOUNTPOINT ] || killtree -KILL $MYPID
@@ -451,18 +472,21 @@ MACADDR=$(macaddr $BASE_IP.$MASTER_IP)
 TMP=/tmp/footage_downloader/$MACADDR/$$
 mkdir -p $TMP
 
+# create shared variables and inter-process storage
+export MYPID=$BASHPID
 export DISK_CONNECTING_TMP=$(mktemp --tmpdir=$TMP)
 export SSD_SERIAL_TMP=$(mktemp --tmpdir=$TMP)
 export REMOVED_DEVICES=$(mktemp --tmpdir=$TMP)
 export CONNECT_Q_TMP=$(mktemp --tmpdir=$TMP)
-export MYPID=$BASHPID
 export BACKUP_DONE_TMP=$(mktemp --tmpdir=$TMP)
 export MUX_DONE_TMP=$(mktemp --tmpdir=$TMP)
 export QSEQ_TMP=$(mktemp --tmpdir=$TMP)
+export QUITTING_TMP=$(mktemp --tmpdir=$TMP)
 
 echo 0 > $QSEQ_TMP
 echo 0 > $BACKUP_DONE_TMP
 echo 0 > $MUX_DONE_TMP
+echo 0 > $QUITTING_TMP
 
 log get camera uptime
 CAMERA_UPTIME=$(get_camera_uptime) 

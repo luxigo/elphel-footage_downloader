@@ -1,6 +1,6 @@
 ## elphel-footage_downloader
 
-Download footage from cameras via esata multiplexers
+Download footage from Elphel cameras via esata multiplexers
 
 ### Documentation
 

@@ -211,6 +211,12 @@ wait_and_backup() {
   done
 }
 
+repair_filesystem() {
+  log checking $SERIAL ${DEVICE}$PARTNUM integrity
+  fsck -y ${DEVICE}$PARTNUM 2>&1 | logstdout
+  return $?
+}
+
 # backup filesystem then enqueue next ssd backup for this mux
 backup() {
   MUX_INDEX=$1
@@ -235,15 +241,18 @@ backup() {
   log disabling NCQ $SERIAL ${DEVICE}$PARTNUM
   echo 1 > /sys/block/$(basename $DEVICE)/device/queue_depth
 
-  # repair filesystem inconditionnaly
-  log checking $SERIAL ${DEVICE}$PARTNUM integrity
-  fsck -y ${DEVICE}$PARTNUM 2>&1 | logstdout
-  FSCK_STATUS=$?
-  [ $FSCK_STATUS -gt 1 ] && killtree -KILL $MYPID
-
+  ISFSCLEAN=0
   # mount device read-only
-  mount -o ro,sync ${DEVICE}$PARTNUM $MOUNTPOINT || killtree -KILL $MYPID
+  if [ ! mount -o ro,sync ${DEVICE}$PARTNUM $MOUNTPOINT ] ; then
+    # mount failed, repair filesystem inconditionnaly
+    repair_filesystem
+    [ $? -gt 1 ] && killtree -KILL $MYPID
+    # try to mount again or quit
+    [ mount -o ro,sync ${DEVICE}$PARTNUM $MOUNTPOINT ] || killtree -KILL $MYPID
+    ISFSCLEAN=1
+  fi
 
+  # backup files
   log backuping mux $MUX_INDEX index $REMOTE_SSD_INDEX serial $SERIAL partition ${DEVICE}$PARTNUM
   RSYNCDEST=$DEST/rsync/$(($(get_ssd_index $SERIAL)+1))
   rsync -av $MOUNTPOINT/$FILE_PATTERN $RSYNCDEST 2>&1 | logstdout $RSYNCDEST $MOUNTPOINT
@@ -255,6 +264,10 @@ backup() {
   log umount $MOUNTPOINT
   sync
   umount ${DEVICE}$PARTNUM || umount -f ${DEVICE}$PARTNUM
+  sync
+
+  # filesystem unclean, repair inconditionnaly
+  [ $ISFSCLEAN -eq 0 ] || repair filesystem
 
   # remove flag
   rm $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_connected || killtree -KILL $MYPID

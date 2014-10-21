@@ -307,8 +307,11 @@ backup() {
   echo $SCSIHOST $SERIAL $DEVICE $STATUS > $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_backuped
 
   # show progression
-  [ $STATUS -eq 0 ] && echo $((++BACKUP_DONE)) > $BACKUP_DONE_TMP
-  log backup_done_count $BACKUP_DONE
+  if [ $STATUS -eq 0 ] ; then
+    echo $((++BACKUP_DONE)) > $BACKUP_DONE_TMP
+    log backup_done_count $BACKUP_DONE
+    echo $SERIAL >> $SERIAL_DONE_TMP
+  fi
 
   # enqueue this mux's next ssd for backup (ignore this step for retries)
   if [ "$ISRETRY" = "" -a $REMOTE_SSD_INDEX -lt ${MUX_MAX_INDEX[$MUX_INDEX]} ] ; then
@@ -323,7 +326,7 @@ backup() {
 
   # exit when nothing left to do
   if [ "$MUX_DONE" = "${#MUXES[@]}" ] ; then
-    if [ "$BACKUP_DONE" = "$N" ] ; then
+    if [ "$BACKUP_DONE" = "$N" -a $(cat $SERIAL_DONE_TMP | sort -u | wc -l) -eq $N ] ; then
       log exit_status 0
     else
       log exit_status 1
@@ -482,6 +485,7 @@ export BACKUP_DONE_TMP=$(mktemp --tmpdir=$TMP)
 export MUX_DONE_TMP=$(mktemp --tmpdir=$TMP)
 export QSEQ_TMP=$(mktemp --tmpdir=$TMP)
 export QUITTING_TMP=$(mktemp --tmpdir=$TMP)
+export SERIAL_DONE_TMP=$(mktemp --tmpdir=$TMP)
 
 echo 0 > $QSEQ_TMP
 echo 0 > $BACKUP_DONE_TMP

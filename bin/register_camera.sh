@@ -262,6 +262,7 @@ enqueue_next_ssd() {
   log removing device mux $MUX_INDEX index $REMOTE_SSD_INDEX
   [ -n "$SCSIHOST" ] || killtree -KILL $MYPID
   echo "scsi remove-single-device $SCSIHOST" | tee /proc/scsi/scsi 2>&1 | logstdout
+  echo $SCSIHOST >> $REMOVED_SCSI_TMP
 
   # remove flag
   rm $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_connected || killtree -KILL $MYPID
@@ -440,10 +441,12 @@ export MUX_DONE_TMP=$(mktemp --tmpdir=$TMP)
 export QSEQ_TMP=$(mktemp --tmpdir=$TMP)
 export SERIAL_DONE_TMP=$(mktemp --tmpdir=$TMP)
 export MODULE_ADDRESS_TMP=$TMP/../modules
+export REMOVED_SCSI_TMP=$TMP/../removed_scsi
 
 echo 0 > $QSEQ_TMP
 echo 0 > $MUX_DONE_TMP
 touch $MODULE_ADDRESS_TMP
+touch $REMOVED_SCSI_TMP
 
 log get camera uptime
 CAMERA_UPTIME=$(get_camera_uptime) 
@@ -524,6 +527,14 @@ wait
 
 log resetting eyesis ide
 reset_eyesis_ide || exit 1
+
+sort -u $REMOVED_SCSI_TMP | while read hbtl ; do 
+  log "adding previously removed scsi devices"
+  echo "scsi add-single-device $hbtl" | tee /proc/scsi/scsi 2>&1 | logstdout
+  sed -r -i -e "/^$hbtl\$/d" $REMOVED_SCSI_TMP
+done
+
+log all_done
 
 rm $TMP/$$ -r 2> /dev/null
 

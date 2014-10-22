@@ -76,14 +76,14 @@ usage() {
 
 # kill child processes, and optionally the root process
 killtree() {
+    trap '' SIGINT
     local _pid=$2
     local _sig=$1
     local killroot=$3
 
-    killroot=yes
     # stop parents children production between child killing and parent killing
     #[ "${_pid}" != "$MYPID" ] && kill -STOP ${_pid}
-    for _child in $(ps -o pid --no-headers --ppid ${_pid}); do
+    for _child in $(ps -o pid --no-headers --ppid ${_pid} 2>/dev/null); do
         killtree ${_sig} ${_child} yes
     done
     [ -n "$killroot" ] && kill ${_sig} ${_pid} 2>/dev/null
@@ -165,31 +165,32 @@ get_module_index() {
 
 save_module_address() {
   local MUX_INDEX=$1
-  local MUX_REMOTE_SSD_INDEX=$2
+  local REMOTE_SSD_INDEX=$2
   local SERIAL=$3
-  [ grep -q -E -e " $SERIAL\$" $MODULE_ADDRESS_TMP ] && return 0
-  echo $(get_module_index $SERIAL) $MUX_INDEX $MUX_REMOTE_SSD_INDEX $SERIAL >> $MODULE_ADDRESS_TMP
+  grep -q -E -e " $SERIAL\$" $MODULE_ADDRESS_TMP && return 0
+  echo $(get_module_index $SERIAL) $MUX_INDEX $REMOTE_SSD_INDEX $SERIAL >> $MODULE_ADDRESS_TMP
   sort -u $MODULE_ADDRESS_TMP > ${MODULE_ADDRESS_TMP}.sort
   cat ${MODULE_ADDRESS_TMP}.sort > $MODULE_ADDRESS_TMP
+  rm ${MODULE_ADDRESS_TMP}.sort
 }
 
 # check that specified module address match saved one
 check_module_address() {
   local MUX_INDEX=$1
-  local MUX_REMOTE_SSD_INDEX=$2
+  local REMOTE_SSD_INDEX=$2
   local SERIAL=$3
-  [ ! grep -q -E -e "^[0-9]+ $MUX_INDEX $MUX_REMOTE_SSD_INDEX " $MODULE_ADDRESS_TMP ] && return 0
-  grep -q -E -e "$MUX_INDEX $MUX_REMOTE_SSD_INDEX $SERIAL\$" $MODULE_ADDRESS_TMP
+  grep -q -E -e "^[0-9]+ $MUX_INDEX $REMOTE_SSD_INDEX " $MODULE_ADDRESS_TMP || return 0
+  grep -q -E -e "$MUX_INDEX $REMOTE_SSD_INDEX $SERIAL\$" $MODULE_ADDRESS_TMP
 }
 
 # wait udev generated files in spool folder before mounting disk and save module address in background
 wait_and_register() {
 
+  log ${LINENO} "<= wait_and_register"
+
   inotifywait -m -e close_write $SPOOL | while read l ; do
 
-    log INOTIFY $l
-
-    sleep 5
+    log ${LINENO} INOTIFY $SPOOL $l
 
     # second string returned by inotifywait is filename (disk serial)
     event=($l)
@@ -199,71 +200,66 @@ wait_and_register() {
     UDEVINFO=$SPOOL/${event[2]}
 
     # get scsi host from spool filename
-    SCSIHOST=$(grep DEVPATH= $UDEVINFO | sed -r -n -e 's#.*/host([0-9]+)/.*#\1#p')
     SCSIHOST=$(get_hbtl $UDEVINFO)
     [ -z "$SCSIHOST" ] && killtree -KILL $MYPID
 
     # get saved connecting disk info
     DISK_CONNECTING_INFO=($(cat $DISK_CONNECTING_TMP))
     MUX_INDEX=${DISK_CONNECTING_INFO[0]}
-    MUX_REMOTE_SSD_INDEX=${DISK_CONNECTING_INFO[1]}
+    REMOTE_SSD_INDEX=${DISK_CONNECTING_INFO[1]}
     ISRETRY=${DISK_CONNECTING_INFO[2]}
     DEVICE=$(grep DEVNAME "$UDEVINFO" | cut -f 2 -d '=')
 
-    log $MUX_INDEX $MUX_REMOTE_SSD_INDEX $SCSIHOST $SERIAL $DEVICE
+    log ${LINENO} device_connected $MUX_INDEX $REMOTE_SSD_INDEX $SCSIHOST $SERIAL $DEVICE
 
     # assert previously saved module address match the connecting disk
-    if [ ! check_module_address $MUX_INDEX $MUX_REMOTE_SSD_INDEX $SERIAL ] ; then
-      log invalid_address "saved serial for mux $MUX_INDEX ssd $MUX_REMOTE_SSD_INDEX is not matching  $SERIAL"
+    if ! check_module_address $MUX_INDEX $REMOTE_SSD_INDEX $SERIAL ; then
+      log ${LINENO} invalid_address "saved serial for mux $MUX_INDEX ssd $REMOTE_SSD_INDEX is not matching  $SERIAL"
       killtree -KILL $MYPID 
     fi
 
     # cache camera module address (mux index, ssd index)
-    save_module_address $MUX_INDEX $MUX_REMOTE_SSD_INDEX $SERIAL
+    save_module_address $MUX_INDEX $REMOTE_SSD_INDEX $SERIAL
 
     # cache mux index and scsi host association
     save_scsihost $MUX_INDEX $SCSIHOST
 
     # if disk is already connected, ignore
-    [ -f $TMP/${MUX_INDEX}_${MUX_REMOTE_SSD_INDEX}_connected ] && continue
+    [ -f $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_connected ] && continue
+
+    log ${LINENO} unpause connect queue
+    touch $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_connecting || killtree -KILL $MYPID
 
     # set already connected flag
-    touch $TMP/${MUX_INDEX}_${MUX_REMOTE_SSD_INDEX}_connected || killtree -KILL $MYPID
-    echo $SCSIHOST $SERIAL $DEVICE > $TMP/${MUX_INDEX}_${MUX_REMOTE_SSD_INDEX}_connected
+    touch $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_connected || killtree -KILL $MYPID
+    echo $SCSIHOST $SERIAL $DEVICE > $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_connected
 
-    # unpause connect queue
-    touch $TMP/${MUX_INDEX}_${MUX_REMOTE_SSD_INDEX}_connecting || killtree -KILL $MYPID
-
-    enqueue_next_ssd &
+    enqueue_next_ssd $MUX_INDEX $REMOTE_SSD_INDEX $SCSIHOST $SERIAL $DEVICE $ISRETRY &
 
   done
 }
 
 # enqueue next ssd for this mux
 enqueue_next_ssd() {
-
   MUX_INDEX=$1
   REMOTE_SSD_INDEX=$2
   SCSIHOST="$3 $4 $5 $6"
   SERIAL=$7
   DEVICE=$8
   ISRETRY=$9
-  BACKUP_DONE=$(cat $BACKUP_DONE_TMP)
   MUX_DONE=$(cat $MUX_DONE_TMP)
 
   # quit if already registered - should not happend
   [ -f $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_registered ] && killtree -KILL $MYPID
 
-  sleep 5
-
   # sync filesystems
-  log syncing
+  log ${LINENO} syncing
   sync
 
   # remove scsi host (will be added in connect_q_run after requesting connection for next ssd of this mux)
-  log removing device mux $MUX_INDEX index $REMOTE_SSD_INDEX
+  log ${LINENO} removing device mux $MUX_INDEX index $REMOTE_SSD_INDEX
   [ -n "$SCSIHOST" ] || killtree -KILL $MYPID
-  echo "scsi remove-single-device $SCSIHOST" | tee /proc/scsi/scsi 2>&1 | logstdout
+  echo "scsi remove-single-device $SCSIHOST" | tee /proc/scsi/scsi 2>&1 | logstdout ${LINENO}
   echo $SCSIHOST >> $REMOVED_SCSI_TMP
 
   # remove flag
@@ -276,34 +272,35 @@ enqueue_next_ssd() {
   echo $SERIAL >> $SERIAL_DONE_TMP
   # show progression
   SERIAL_DONE_COUNT=$(sort -u $SERIAL_DONE_TMP | wc -l)
-  log registration_done_count $SERIAL_DONE_COUNT
+  log ${LINENO} registration_done_count $SERIAL_DONE_COUNT
 
   # enqueue this mux's next ssd for backup (ignore this step for retries)
   if [ "$ISRETRY" = "" -a $REMOTE_SSD_INDEX -lt ${MUX_MAX_INDEX[$MUX_INDEX]} ] ; then
+    log ${LINENO} enqueue mux $MUX_INDEX ssd $((REMOTE_SSD_INDEX+1))
     echo $MUX_INDEX $((REMOTE_SSD_INDEX+1)) >> $CONNECT_Q_TMP
   else
     # check mux done
     if ! is_any_ssd_left_in_queue_for_mux $MUX_INDEX ; then
       echo $((++MUX_DONE)) > $MUX_DONE_TMP
     fi
-    log mux_done_count $MUX_DONE
+    log ${LINENO} mux_done_count $MUX_DONE
   fi
 
   # exit when nothing left to do
   if [ "$MUX_DONE" = "${#MUXES[@]}" ] ; then
     if [ $(sort -u $SERIAL_DONE_TMP | wc -l) -eq $N ] ; then
-      log exit_status 0
+      log ${LINENO} exit_status 0
     else
-      log exit_status 1
+      log ${LINENO} exit_status 1
     fi
     killtree -KILL $MYPID
   fi
 }
 
 is_any_ssd_left_in_queue_for_mux() {
-   MUX_INDEX=$1
+   local MUX_INDEX=$1
    QSEQ=$(cat $QSEQ_TMP)
-   tail -n +$QSEQ $CONNECT_Q_TMP | cut -f 1 -d ' ' | grep -q -e '^'$MUX'$'
+   tail -n +$(($QSEQ+1)) $CONNECT_Q_TMP | cut -f 1 -d ' ' | grep -q -e '^'$MUX_INDEX'$'
 }
 
 wait_watches_established() {
@@ -313,23 +310,30 @@ wait_watches_established() {
 
   FIFO=$(mktemp -u).$$
   mkfifo $FIFO
-  tail -f $INOTIFY_STDERR > $FIFO &
-  TAIL_PID=$?
+  tail -f $INOTIFY_STDERR > $FIFO 2>&1 &
+  TAIL_PID=$!
 
   while read msg ; do
-    echo msg = $msg | logstdout
+    echo $msg | logstdout ${LINENO}
     [[ "$msg" =~ "Watches established" ]] && break
   done < $FIFO
 
-  kill $TAIL_PID
+  kill $TAIL_PID > /dev/null 2>&1
 
-  rm $INOTIFY_STDERR
+  rm $INOTIFY_STDERR $FIFO
 }
 
 # switch esata connections sequentially reading from $CONNECT_Q_TMP
 connect_q_run() {
 
-  tail -f $CONNECT_Q_TMP | while read INDEXES ; do
+  log ${LINENO} "<= connect_q_run"
+
+  local FIFO=$(mktemp -u).$$
+  mkfifo $FIFO
+  tail -f $CONNECT_Q_TMP > $FIFO 2>&1 &
+  local TAIL_PID=$!
+
+  while read INDEXES ; do
 
     # increment queue sequence number
     echo $((++QSEQ)) > $QSEQ_TMP
@@ -347,37 +351,39 @@ connect_q_run() {
       continue
     fi
 
+    log ${LINENO} connect_q_run processing mux $MUX_INDEX ssd $REMOTE_SSD_INDEX
+
     while true ; do
 
       # before requesting disk connection, setup inotifywait and timemout to pause queue until disk is connected or timeout occurs
-      touch /tmp/${MUX_INDEX}_${REMOTE_SSD_INDEX}_connecting || killtree -KILL $MYPID
+      touch $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_connecting || killtree -KILL $MYPID
 
       INOTIFY_STDERR=$(mktemp)
-      timeout -k 10 30 inotifywait -e close_write /tmp/${MUX_INDEX}_${REMOTE_SSD_INDEX}_connecting 2> $INOTIFY_STDERR &
+      timeout -k 10 30 inotifywait -e close_write $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_connecting 2> $INOTIFY_STDERR &
       TIMEOUTPID=$!
-      wait_watches_established $INOTIFY_STDERR
+      wait_watches_established $INOTIFY_STDERR 2>&1 | grep -v -e INOTIFY_STDERR logstdout ${LINENO} 
 
       # before requesting disk connection, save connecting disk info
-      echo $MUX_INDEX $REMOTE_SSD_INDEX $ISRETRY> $DISK_CONNECTING_TMP
+      echo $MUX_INDEX $REMOTE_SSD_INDEX $ISRETRY > $DISK_CONNECTING_TMP
 
       # request disk connection
-      log requesting sata disk mux $MUX_INDEX index $REMOTE_SSD_INDEX
-      log wget http://${MUXES[$MUX_INDEX]}/103697.php?c:host4=ssd$REMOTE_SSD_INDEX
+      log ${LINENO} requesting sata disk mux $MUX_INDEX index $REMOTE_SSD_INDEX
+      log ${LINENO} wget http://${MUXES[$MUX_INDEX]}/103697.php?c:host4=ssd$REMOTE_SSD_INDEX
       wget -q http://${MUXES[$MUX_INDEX]}/103697.php?c:host4=ssd$REMOTE_SSD_INDEX -O - > /dev/null || killtree -KILL $MYPID
 
       # add scsi device, if previously removed after previous ssd backup for this mux
       hbtl=$(get_scsihost $MUX_INDEX)
       if [ -n "$hbtl" ] ; then
-        log "adding scsi device using values from cache"
-        echo "scsi add-single-device $hbtl" | tee /proc/scsi/scsi 2>&1 | logstdout
+        log ${LINENO} "adding scsi device using values from cache"
+        echo "scsi add-single-device $hbtl" | tee /proc/scsi/scsi 2>&1 | logstdout ${LINENO}
       fi
 
       # wait for inotifywait and timeout setup above
-      log waiting for mux $MUX_INDEX disk $REMOTE_SSD_INDEX
+      log ${LINENO} waiting for mux $MUX_INDEX disk $REMOTE_SSD_INDEX
       wait $TIMEOUTPID
       timeout_status=$?
 
-      log timeout status $timeout_status wating for mux $MUX_INDEX disk $REMOTE_SSD_INDEX
+      log ${LINENO} timeout status $timeout_status wating for mux $MUX_INDEX disk $REMOTE_SSD_INDEX
 
       rm $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_connecting
 
@@ -388,7 +394,7 @@ connect_q_run() {
       [ -n "$ISRETRY" ] && killtree -KILL $MYPID
 
       # re-enqueue this mux/ssd pair for later
-      log requeue mux $MUX_INDEX index $REMOTE_SSD_INDEX single
+      log ${LINENO} requeue mux $MUX_INDEX index $REMOTE_SSD_INDEX single
       echo $MUX_INDEX $REMOTE_SSD_INDEX isretry >> $CONNECT_Q_TMP
 
       # ask next ssd index for this mux
@@ -396,14 +402,16 @@ connect_q_run() {
       ((++REMOTE_SSD_INDEX))
 
     done
-  done
+  done < $FIFO
+  kill -TERM $TAIL_PID > /dev/null 2>&1
+  rm $FIFO
 }
 
 # reset multiplexers
 reset_eyesis_ide() {
-  log reset eyesis_ide
+  log ${LINENO} reset eyesis_ide
   for (( i=0 ; $i < ${#MUXES[@]} ; ++i )) do
-    log wget http://${MUXES[$i]}/eyesis_ide.php
+    log ${LINENO} wget http://${MUXES[$i]}/eyesis_ide.php
     wget -q http://${MUXES[$i]}/eyesis_ide.php -O - > /dev/null || exit 1
   done
 }
@@ -460,7 +468,7 @@ echo 0 > $MUX_DONE_TMP
 touch $MODULE_ADDRESS_TMP
 touch $REMOVED_SCSI_TMP
 
-log get camera uptime
+log ${LINENO} get camera uptime
 CAMERA_UPTIME=$(get_camera_uptime) 
 [ -z "$CAMERA_UPTIME" ] && exit 1
 [ $CAMERA_UPTIME -lt 120 ] && sleep $((120-CAMERA_UPTIME))
@@ -487,21 +495,21 @@ done
 
 # get camera ssd serials
 STATUS=()
-log get ssd serials
+log ${LINENO} get ssd serials
 export SSD_SERIAL=()
 get_remote_disk_serial /dev/hda 2>&1 | tee | while read l ; do
   msg=($l)
   [ ${msg[0]} = "sshall:" ] || continue
-  [ ${msg[2]} = "stderr" ] && log get_remote_disk_serial: $l
+  [ ${msg[2]} = "stderr" ] && log ${LINENO} get_remote_disk_serial: $l
   LOGIN=${msg[1]}
-  [ -z "$LOGIN" ] && log get_remote_disk_serial: $l && killtree -KILL $MYPID
+  [ -z "$LOGIN" ] && log ${LINENO} get_remote_disk_serial: $l && killtree -KILL $MYPID
   IP=$(echo $LOGIN | sed -r -n -e 's/.*@[0-9]+\.[0-9]+\.[0-9]+\.([0-9]+).*/\1/p')
   INDEX=$(expr $IP - $MASTER_IP)
   WHAT=${msg[2]}
   case "$WHAT" in
   status)
     STATUS[$INDEX]=${msg[3]}
-    [ "${STATUS[$INDEX]}" != "0" ] && log get_remote_serial: $IP && killtree -KILL $MYPID
+    [ "${STATUS[$INDEX]}" != "0" ] && log ${LINENO} get_remote_serial: $IP && killtree -KILL $MYPID
     ;;
   stdout)
     SERIAL=${msg[3]}
@@ -513,14 +521,14 @@ done
 cat $SSD_SERIAL_TMP
 . $SSD_SERIAL_TMP
 
-log got ${#SSD_SERIAL[@]} SSD serials
+log ${LINENO} got ${#SSD_SERIAL[@]} SSD serials
 
 [ ${#SSD_SERIAL[@]} -ne $N ] && exit 1
 
 rm $SSD_SERIAL_TMP
 
 # unmount camera ssd
-log umount CF
+log ${LINENO} umount CF
 umount_all
 
 # run backgroud task waiting for disks and launching backups
@@ -532,21 +540,21 @@ for (( i=0 ; i < ${#MUXES[@]} ; ++i )) ; do
 done
 
 # run queue in background
-log starting queue processing
+log ${LINENO} starting queue processing
 connect_q_run &
 
 wait
 
-log resetting eyesis ide
-reset_eyesis_ide || exit 1
+log ${LINENO} resetting eyesis ide
+reset_eyesis_ide
 
 sort -u $REMOVED_SCSI_TMP | while read hbtl ; do 
-  log "adding previously removed scsi devices"
-  echo "scsi add-single-device $hbtl" | tee /proc/scsi/scsi 2>&1 | logstdout
+  log ${LINENO} "adding previously removed scsi devices"
+  echo "scsi add-single-device $hbtl" | tee /proc/scsi/scsi 2>&1 | logstdout ${LINENO}
   sed -r -i -e "/^$hbtl\$/d" $REMOVED_SCSI_TMP
 done
 
-log all_done
+log ${LINENO} exit
 
 rm $TMP/$$ -r 2> /dev/null
 

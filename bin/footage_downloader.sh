@@ -366,13 +366,9 @@ backup() {
 }
 
 is_any_ssd_left_in_queue_for_mux() {
-set -x
-   local MUX_INDEX=$1
+   export MUX_INDEX=$1
    QSEQ=$(cat $QSEQ_TMP)
-   tail -n +$(($QSEQ+1)) $CONNECT_Q_TMP | tee | cut -f 1 -d ' ' | grep -q -e '^'$MUX_INDEX'$'
-   RET=$?
-set +x
-   return $RET
+   tail -n +$(($QSEQ+1)) $CONNECT_Q_TMP | cut -f 1 -d ' ' | grep -q -e '^'$MUX_INDEX'$'
 }
 
 wait_watches_established() {

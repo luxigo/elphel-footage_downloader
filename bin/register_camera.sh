@@ -307,12 +307,22 @@ is_any_ssd_left_in_queue_for_mux() {
 }
 
 wait_watches_established() {
+
   local INOTIFY_STDERR=$1
   local msg
-  tail -f $INOTIFY_STDERR | while read msg ; do
-    echo $msg | logstdout
+
+  FIFO=$(mktemp)
+  mkfifo $FIFO
+  tail -f $INOTIFY_STDERR > $FIFO &
+  TAIL_PID=$?
+
+  while read msg ; do
+    echo msg = $msg | logstdout
     [[ "$msg" =~ "Watches established" ]] && break
-  done
+  done < $FIFO
+
+  kill $TAIL_PID
+
   rm $INOTIFY_STDERR
 }
 

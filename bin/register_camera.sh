@@ -189,6 +189,8 @@ wait_and_register() {
 
     log INOTIFY $l
 
+    sleep 5
+
     # second string returned by inotifywait is filename (disk serial)
     event=($l)
     SERIAL=${event[2]}

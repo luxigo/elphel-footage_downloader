@@ -66,11 +66,11 @@ assertcommands() {
 }
 
 checkdependencies() {
-  assertcommands fsck rsync inotifywait arp wget ssh sshall
+  assertcommands inotifywait arp wget ssh sshall
 }
 
 usage() {
-  echo "usage: $(basename $0)"
+  echo "usage: $(basename $0) <destination>"
   exit $1
 }
 
@@ -167,11 +167,11 @@ save_module_address() {
   local MUX_INDEX=$1
   local REMOTE_SSD_INDEX=$2
   local SERIAL=$3
-  grep -q -E -e " $SERIAL\$" $MODULE_ADDRESS_TMP && return 0
-  echo $(get_module_index $SERIAL) $MUX_INDEX $REMOTE_SSD_INDEX $SERIAL >> $MODULE_ADDRESS_TMP
-  sort -u $MODULE_ADDRESS_TMP > ${MODULE_ADDRESS_TMP}.sort
-  cat ${MODULE_ADDRESS_TMP}.sort > $MODULE_ADDRESS_TMP
-  rm ${MODULE_ADDRESS_TMP}.sort
+  grep -q -E -e " $SERIAL\$" $MODULES_FILE && return 0
+  echo $(get_module_index $SERIAL) $MUX_INDEX $REMOTE_SSD_INDEX $SERIAL >> $MODULES_FILE
+  sort -u $MODULES_FILE > /tmp/${MODULES_FILE}.$$
+  cat ${MODULES_FILE}.$$ > $MODULES_FILE
+  rm ${MODULES_FILE}.$$
 }
 
 # check that specified module address match saved one
@@ -179,8 +179,10 @@ check_module_address() {
   local MUX_INDEX=$1
   local REMOTE_SSD_INDEX=$2
   local SERIAL=$3
-  grep -q -E -e "^[0-9]+ $MUX_INDEX $REMOTE_SSD_INDEX " $MODULE_ADDRESS_TMP || return 0
-  grep -q -E -e "$MUX_INDEX $REMOTE_SSD_INDEX $SERIAL\$" $MODULE_ADDRESS_TMP
+  # ignore if not in modules file
+  grep -q -E -e "^[0-9]+ $MUX_INDEX $REMOTE_SSD_INDEX " $MODULES_FILE || return 0
+  # return error if serial is not matching saved one for mux/ssd pair
+  grep -q -E -e " $MUX_INDEX $REMOTE_SSD_INDEX $SERIAL\$" $MODULES_FILE
 }
 
 # wait udev generated files in spool folder before mounting disk and save module address in background
@@ -437,6 +439,12 @@ umount_all() {
 
 SCSIHOST=()
 
+[ -z "$DESTINATION" ] && DESTINATION=$1
+
+if [ -z "$DESTINATION" ] ; then
+  usage 1
+fi
+
 for opt in $@ ; do
   [ "$opt" = "-h" ] && usage 0
 done
@@ -460,12 +468,10 @@ export CONNECT_Q_TMP=$(mktemp --tmpdir=$TMP)
 export MUX_DONE_TMP=$(mktemp --tmpdir=$TMP)
 export QSEQ_TMP=$(mktemp --tmpdir=$TMP)
 export SERIAL_DONE_TMP=$(mktemp --tmpdir=$TMP)
-export MODULE_ADDRESS_TMP=$TMP/../modules
 export REMOVED_SCSI_TMP=$TMP/../removed_scsi
 
 echo 0 > $QSEQ_TMP
 echo 0 > $MUX_DONE_TMP
-touch $MODULE_ADDRESS_TMP
 touch $REMOVED_SCSI_TMP
 
 log ${LINENO} get camera uptime
@@ -486,7 +492,8 @@ fi
 # set destination folder
 DEST="$DESTINATION/$MACADDR"
 
-mkdir -p "$DEST/rsync" || exit 1
+mkdir -p "$DEST/info/footage_downloader" || exit 1
+export MODULES_FILE="$DEST/info/footage_downloader/modules"
 
 # build sshall login list
 for (( i=0 ; $i < $N ; ++i )) ; do

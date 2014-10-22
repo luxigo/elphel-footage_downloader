@@ -70,14 +70,8 @@ checkdependencies() {
 }
 
 usage() {
-  echo "usage: $(basename $0) <destination> <file_pattern>"
+  echo "usage: $(basename $0)"
   exit $1
-}
-
-wait_fsck() {
-  while killall -0 fsck 2>/dev/null || killall -0 fsck.ext2  2>/dev/null ; do
-    sleep 10
-  done
 }
 
 # kill child processes, and optionally the root process
@@ -85,13 +79,6 @@ killtree() {
     local _pid=$2
     local _sig=$1
     local killroot=$3
-
-    # avoid fsck race condition
-    echo 1 > $QUITTING_TMP
-    sleep 5
-
-    # dont quit during fsck
-    wait_fsck
 
     killroot=yes
     # stop parents children production between child killing and parent killing
@@ -122,17 +109,8 @@ get_remote_disk_serial() {
   HOSTS=$USER_AT_HOST sshall /sbin/hdparm -i $1 \| sed -r -n -e "'s/.*SerialNo=([^ ]+).*/\1/p'"
 }
 
-get_local_disk_serial() {
-  /sbin/hdparm -i $1 | sed -r -n -e 's/.*SerialNo=([^ ]+).*/\1/p'
-}
-
 get_hbtl() {
   grep DEVPATH= $1 | sed -r -n -e 's#.*/([0-9]:[0-9]:[0-9]:[0-9])/.*#\1#' -e T -e 's/:/ /gp'
-}
-
-is_mounted() {
-  DEVICE=$1
-  grep -q "^$DEVICE " /proc/mounts
 }
 
 log() {
@@ -204,8 +182,8 @@ check_module_address() {
   grep -q -E -e "$MUX_INDEX $MUX_REMOTE_SSD_INDEX $SERIAL\$" $MODULE_ADDRESS_TMP
 }
 
-# wait udev generated files in spool folder before mounting disk and launching backup in background
-wait_and_backup() {
+# wait udev generated files in spool folder before mounting disk and save module address in background
+wait_and_register() {
 
   inotifywait -m -e close_write $SPOOL | while read l ; do
 
@@ -247,33 +225,20 @@ wait_and_backup() {
     # if disk is already connected, ignore
     [ -f $TMP/${MUX_INDEX}_${MUX_REMOTE_SSD_INDEX}_connected ] && continue
 
-    # unpause connect queue
-    touch $TMP/${MUX_INDEX}_${MUX_REMOTE_SSD_INDEX}_connecting || killtree -KILL $MYPID
-
     # set already connected flag
     touch $TMP/${MUX_INDEX}_${MUX_REMOTE_SSD_INDEX}_connected || killtree -KILL $MYPID
     echo $SCSIHOST $SERIAL $DEVICE > $TMP/${MUX_INDEX}_${MUX_REMOTE_SSD_INDEX}_connected
 
-    # launch backup in background
-    backup $MUX_INDEX $MUX_REMOTE_SSD_INDEX $SCSIHOST $SERIAL $DEVICE $ISRETRY &
+    # unpause connect queue
+    touch $TMP/${MUX_INDEX}_${MUX_REMOTE_SSD_INDEX}_connecting || killtree -KILL $MYPID
+
+    enqueue_next_ssd &
 
   done
 }
 
-repair_filesystem() {
-
-  # if process is exiting, just wait for kill
-  while [ "$(cat $QUITTING_TMP)" -eq 1 ] ; do sleep 100000 ; done
-
-  # else repair filesystem inconditionnaly
-  log checking $SERIAL ${DEVICE}$PARTNUM integrity
-  fsck -y ${DEVICE}$PARTNUM
-
-  return $?
-}
-
-# backup filesystem then enqueue next ssd backup for this mux
-backup() {
+# enqueue next ssd for this mux
+enqueue_next_ssd() {
 
   MUX_INDEX=$1
   REMOTE_SSD_INDEX=$2
@@ -284,48 +249,10 @@ backup() {
   BACKUP_DONE=$(cat $BACKUP_DONE_TMP)
   MUX_DONE=$(cat $MUX_DONE_TMP)
 
-  # quit if already backuped - should not happend
-  [ -f $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_backuped ] && killtree -KILL $MYPID
+  # quit if already registered - should not happend
+  [ -f $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_registered ] && killtree -KILL $MYPID
 
-  log backup $@
-  PARTNUM=1
-  MOUNTPOINT=/mnt/$(basename ${DEVICE})$PARTNUM
-  mkdir -p $MOUNTPOINT || killtree -KILL $MYPID
-
-  # disable ncq
-  log disabling NCQ $SERIAL ${DEVICE}$PARTNUM
-  echo 1 > /sys/block/$(basename $DEVICE)/device/queue_depth
-
-  ISFSCLEAN=0
-  # mount device read-only
-  if [ ! mount -o ro,sync ${DEVICE}$PARTNUM $MOUNTPOINT ] ; then
-    # mount failed, repair filesystem inconditionnaly
-    repair_filesystem | logstdout
-    [ $? -gt 1 ] && killtree -KILL $MYPID
-    # try to mount again or quit
-    [ mount -o ro,sync ${DEVICE}$PARTNUM $MOUNTPOINT ] || killtree -KILL $MYPID
-    ISFSCLEAN=1
-  fi
-
-  # backup files
-  log backuping mux $MUX_INDEX index $REMOTE_SSD_INDEX serial $SERIAL partition ${DEVICE}$PARTNUM
-  RSYNCDEST=$DEST/rsync/$(get_module_index $SERIAL)
-  rsync -av $MOUNTPOINT/$FILE_PATTERN $RSYNCDEST 2>&1 | logstdout $RSYNCDEST $MOUNTPOINT
-  STATUS=$?
-
-  log backup_status $STATUS mux ${MUX_INDEX} index ${REMOTE_SSD_INDEX}
-
-  # unmount device
-  log umount $MOUNTPOINT
-  sync
-  umount ${DEVICE}$PARTNUM || umount -f ${DEVICE}$PARTNUM
-  sync
-
-  # filesystem unclean, repair inconditionnaly
-  [ $ISFSCLEAN -eq 0 ] || repair filesystem
-
-  # remove flag
-  rm $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_connected || killtree -KILL $MYPID
+  sleep 5
 
   # sync filesystems
   log syncing
@@ -336,16 +263,17 @@ backup() {
   [ -n "$SCSIHOST" ] || killtree -KILL $MYPID
   echo "scsi remove-single-device $SCSIHOST" | tee /proc/scsi/scsi 2>&1 | logstdout
 
-  # set backuped flag
-  touch $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_backuped || killtree -KILL $MYPID
-  echo $SCSIHOST $SERIAL $DEVICE $STATUS > $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_backuped
+  # remove flag
+  rm $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_connected || killtree -KILL $MYPID
 
+  # set registered flag
+  touch $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_registered || killtree -KILL $MYPID
+  echo $SCSIHOST $SERIAL $DEVICE $STATUS > $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_registered
+
+  echo $SERIAL >> $SERIAL_DONE_TMP
   # show progression
-  if [ $STATUS -eq 0 ] ; then
-    echo $((++BACKUP_DONE)) > $BACKUP_DONE_TMP
-    log backup_done_count $BACKUP_DONE
-    echo $SERIAL >> $SERIAL_DONE_TMP
-  fi
+  SERIAL_DONE_COUNT=$(sort -u $SERIAL_DONE_TMP | wc -l)
+  log registration_done_count $SERIAL_DONE_COUNT
 
   # enqueue this mux's next ssd for backup (ignore this step for retries)
   if [ "$ISRETRY" = "" -a $REMOTE_SSD_INDEX -lt ${MUX_MAX_INDEX[$MUX_INDEX]} ] ; then
@@ -360,7 +288,7 @@ backup() {
 
   # exit when nothing left to do
   if [ "$MUX_DONE" = "${#MUXES[@]}" ] ; then
-    if [ "$BACKUP_DONE" = "$N" -a $(cat $SERIAL_DONE_TMP | sort -u | wc -l) -eq $N ] ; then
+    if [ $(sort -u $SERIAL_DONE_TMP | wc -l) -eq $N ] ; then
       log exit_status 0
     else
       log exit_status 1
@@ -458,7 +386,7 @@ connect_q_run() {
   done
 }
 
-# remount ssd on cameras
+# reset multiplexers
 reset_eyesis_ide() {
   log reset eyesis_ide
   for (( i=0 ; $i < ${#MUXES[@]} ; ++i )) do
@@ -488,18 +416,11 @@ umount_all() {
 
 SCSIHOST=()
 
-[ -z "$DESTINATION" ] && DESTINATION=$1
-[ -z "$FILE_PATTERN" ] && FILE_PATTERN="$2"
-
 for opt in $@ ; do
   [ "$opt" = "-h" ] && usage 0
 done
 
 checkdependencies
-
-if [ -z "$DESTINATION" ] ; then
-  usage 1
-fi
 
 # get camera master ip mac address
 ping -w 5 -c 1 $BASE_IP.$MASTER_IP > /dev/null || exit 1
@@ -515,17 +436,13 @@ export DISK_CONNECTING_TMP=$(mktemp --tmpdir=$TMP)
 export SSD_SERIAL_TMP=$(mktemp --tmpdir=$TMP)
 export REMOVED_DEVICES=$(mktemp --tmpdir=$TMP)
 export CONNECT_Q_TMP=$(mktemp --tmpdir=$TMP)
-export BACKUP_DONE_TMP=$(mktemp --tmpdir=$TMP)
 export MUX_DONE_TMP=$(mktemp --tmpdir=$TMP)
 export QSEQ_TMP=$(mktemp --tmpdir=$TMP)
-export QUITTING_TMP=$(mktemp --tmpdir=$TMP)
 export SERIAL_DONE_TMP=$(mktemp --tmpdir=$TMP)
 export MODULE_ADDRESS_TMP=$TMP/../modules
 
 echo 0 > $QSEQ_TMP
-echo 0 > $BACKUP_DONE_TMP
 echo 0 > $MUX_DONE_TMP
-echo 0 > $QUITTING_TMP
 touch $MODULE_ADDRESS_TMP
 
 log get camera uptime
@@ -592,7 +509,7 @@ log umount CF
 umount_all
 
 # run backgroud task waiting for disks and launching backups
-wait_and_backup &
+wait_and_register &
 
 # queue first ssd for each mux
 for (( i=0 ; i < ${#MUXES[@]} ; ++i )) ; do

@@ -179,6 +179,31 @@ get_scsihost() {
   grep $MUX_INDEX $SCSIHOST_TMP | sed -r -e 's/^[0-9]+ (.*)/\1/'
 }
 
+# get module number for ssd serial
+get_module_index() {
+  local SERIAL=$1
+  echo $(($(get_ssd_index $SERIAL)+1))
+}
+
+save_module_address() {
+  local MUX_INDEX=$1
+  local MUX_REMOTE_SSD_INDEX=$2
+  local SERIAL=$3
+  [ grep -q -E -e " $SERIAL\$" $MODULE_ADDRESS_TMP ] && return 0
+  echo $(get_module_index $SERIAL) $MUX_INDEX $MUX_REMOTE_SSD_INDEX $SERIAL >> $MODULE_ADDRESS_TMP
+  sort -u $MODULE_ADDRESS_TMP > ${MODULE_ADDRESS_TMP}.sort
+  cat ${MODULE_ADDRESS_TMP}.sort > $MODULE_ADDRESS_TMP
+}
+
+# check that specified module address match saved one
+check_module_address() {
+  local MUX_INDEX=$1
+  local MUX_REMOTE_SSD_INDEX=$2
+  local SERIAL=$3
+  [ ! grep -q -E -e "^[0-9]+ $MUX_INDEX $MUX_REMOTE_SSD_INDEX " $MODULE_ADDRESS_TMP ] && return 0
+  grep -q -E -e "$MUX_INDEX $MUX_REMOTE_SSD_INDEX $SERIAL\$" $MODULE_ADDRESS_TMP
+}
+
 # wait udev generated files in spool folder before mounting disk and launching backup in background
 wait_and_backup() {
 
@@ -206,6 +231,15 @@ wait_and_backup() {
     DEVICE=$(grep DEVNAME "$UDEVINFO" | cut -f 2 -d '=')
 
     log $MUX_INDEX $MUX_REMOTE_SSD_INDEX $SCSIHOST $SERIAL $DEVICE
+
+    # assert previously saved module address match the connecting disk
+    if [ ! check_module_address $MUX_INDEX $MUX_REMOTE_SSD_INDEX $SERIAL ] ; then
+      log invalid_address "saved serial for mux $MUX_INDEX ssd $MUX_REMOTE_SSD_INDEX is not matching  $SERIAL"
+      killtree -KILL $MYPID 
+    fi
+
+    # cache camera module address (mux index, ssd index)
+    save_module_address $MUX_INDEX $MUX_REMOTE_SSD_INDEX $SERIAL
 
     # cache mux index and scsi host association
     save_scsihost $MUX_INDEX $SCSIHOST
@@ -275,7 +309,7 @@ backup() {
 
   # backup files
   log backuping mux $MUX_INDEX index $REMOTE_SSD_INDEX serial $SERIAL partition ${DEVICE}$PARTNUM
-  RSYNCDEST=$DEST/rsync/$(($(get_ssd_index $SERIAL)+1))
+  RSYNCDEST=$DEST/rsync/$(get_module_index $SERIAL)
   rsync -av $MOUNTPOINT/$FILE_PATTERN $RSYNCDEST 2>&1 | logstdout $RSYNCDEST $MOUNTPOINT
   STATUS=$?
 
@@ -486,11 +520,13 @@ export MUX_DONE_TMP=$(mktemp --tmpdir=$TMP)
 export QSEQ_TMP=$(mktemp --tmpdir=$TMP)
 export QUITTING_TMP=$(mktemp --tmpdir=$TMP)
 export SERIAL_DONE_TMP=$(mktemp --tmpdir=$TMP)
+export MODULE_ADDRESS_TMP=$TMP/../modules
 
 echo 0 > $QSEQ_TMP
 echo 0 > $BACKUP_DONE_TMP
 echo 0 > $MUX_DONE_TMP
 echo 0 > $QUITTING_TMP
+touch $MODULE_ADDRESS_TMP
 
 log get camera uptime
 CAMERA_UPTIME=$(get_camera_uptime) 

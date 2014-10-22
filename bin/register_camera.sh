@@ -311,7 +311,7 @@ wait_watches_established() {
   local INOTIFY_STDERR=$1
   local msg
 
-  FIFO=$(mktemp)
+  FIFO=$(mktemp -u).$$
   mkfifo $FIFO
   tail -f $INOTIFY_STDERR > $FIFO &
   TAIL_PID=$?

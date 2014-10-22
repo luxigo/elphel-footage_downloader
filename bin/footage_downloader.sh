@@ -70,7 +70,7 @@ checkdependencies() {
 }
 
 usage() {
-  echo "usage: $(basename $0) <destination> <file_pattern>"
+  echo "usage: $(basename $0) <destination> [ <file_pattern> ]"
   exit $1
 }
 
@@ -180,24 +180,13 @@ get_module_index() {
   echo $(($(get_ssd_index $SERIAL)+1))
 }
 
-save_module_address() {
-  local MUX_INDEX=$1
-  local REMOTE_SSD_INDEX=$2
-  local SERIAL=$3
-  grep -q -E -e " $SERIAL\$" $MODULE_ADDRESS_TMP && return 0
-  echo $(get_module_index $SERIAL) $MUX_INDEX $REMOTE_SSD_INDEX $SERIAL >> $MODULE_ADDRESS_TMP
-  sort -u $MODULE_ADDRESS_TMP > ${MODULE_ADDRESS_TMP}.sort
-  cat ${MODULE_ADDRESS_TMP}.sort > $MODULE_ADDRESS_TMP
-  rm ${MODULE_ADDRESS_TMP}.sort
-}
-
 # check that specified module address match saved one
 check_module_address() {
   local MUX_INDEX=$1
   local REMOTE_SSD_INDEX=$2
   local SERIAL=$3
-  grep -q -E -e "^[0-9]+ $MUX_INDEX $REMOTE_SSD_INDEX " $MODULE_ADDRESS_TMP || return 0
-  grep -q -E -e "$MUX_INDEX $REMOTE_SSD_INDEX $SERIAL\$" $MODULE_ADDRESS_TMP
+  # return error if serial is not matching saved one for mux/ssd pair
+  grep -q -E -e " $MUX_INDEX $REMOTE_SSD_INDEX $SERIAL\$" $MODULES_FILE
 }
 
 # wait udev generated files in spool folder before mounting disk and launching backup in background
@@ -234,9 +223,6 @@ wait_and_backup() {
       log ${LINENO} invalid_address "saved serial for mux $MUX_INDEX ssd $REMOTE_SSD_INDEX is not matching  $SERIAL"
       killtree -KILL $MYPID 
     fi
-
-    # cache camera module address (mux index, ssd index)
-    save_module_address $MUX_INDEX $REMOTE_SSD_INDEX $SERIAL
 
     # cache mux index and scsi host association
     save_scsihost $MUX_INDEX $SCSIHOST
@@ -526,15 +512,15 @@ SCSIHOST=()
 [ -z "$DESTINATION" ] && DESTINATION=$1
 [ -z "$FILE_PATTERN" ] && FILE_PATTERN="$2"
 
+if [ -z "$DESTINATION" ] ; then
+  usage 1
+fi
+
 for opt in $@ ; do
   [ "$opt" = "-h" ] && usage 0
 done
 
 checkdependencies
-
-if [ -z "$DESTINATION" ] ; then
-  usage 1
-fi
 
 # get camera master ip mac address
 ping -w 5 -c 1 $BASE_IP.$MASTER_IP > /dev/null || exit 1
@@ -554,13 +540,11 @@ export MUX_DONE_TMP=$(mktemp --tmpdir=$TMP)
 export QSEQ_TMP=$(mktemp --tmpdir=$TMP)
 export QUITTING_TMP=$(mktemp --tmpdir=$TMP)
 export SERIAL_DONE_TMP=$(mktemp --tmpdir=$TMP)
-export MODULE_ADDRESS_TMP=$TMP/../modules
 export REMOVED_SCSI_TMP=$TMP/../removed_scsi
 
 echo 0 > $QSEQ_TMP
 echo 0 > $MUX_DONE_TMP
 echo 0 > $QUITTING_TMP
-touch $MODULE_ADDRESS_TMP
 touch $REMOVED_SCSI_TMP
 
 log ${LINENO} get camera uptime
@@ -579,9 +563,16 @@ else
 fi
 
 # set destination folder
-DEST="$DESTINATION/$MACADDR"
+DEST="$DESTINATION/$(echo $MACADDR | tr 'a-f' 'A-F')"
 
 mkdir -p "$DEST/rsync" || exit 1
+
+export MODULES_FILE=$DEST/info/footage_downloader/modules
+if [ ! -f $MODULES_FILE ] ; then
+  log ${LINENO} error file not found: $MODULES_FILE
+  log ${LINENO} error run register_camera.sh $DESTINATION first
+  exit 1
+fi
 
 # build sshall login list
 for (( i=0 ; $i < $N ; ++i )) ; do

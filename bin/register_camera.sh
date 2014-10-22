@@ -311,7 +311,7 @@ wait_watches_established() {
   local msg
   tail -f $INOTIFY_STDERR | while read msg ; do
     echo $msg | logstdout
-    [ "$msg" =~ "Watches established" ] && break
+    [[ "$msg" =~ "Watches established" ]] && break
   done
   rm $INOTIFY_STDERR
 }

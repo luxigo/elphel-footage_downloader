@@ -99,7 +99,7 @@ killtree() {
     for _child in $(ps -o pid --no-headers --ppid ${_pid}); do
         killtree ${_sig} ${_child} yes
     done
-    [ -n "$killroot" ] && kill ${_sig} ${_pid} 2>/dev/null
+    [ -n "$killroot" ] && sleep 5 && kill ${_sig} ${_pid} 2>/dev/null
 }
 
 macaddr() {
@@ -210,6 +210,8 @@ wait_and_backup() {
   inotifywait -m -e close_write $SPOOL | while read l ; do
 
     log INOTIFY $l
+
+    sleep 5
 
     # second string returned by inotifywait is filename (disk serial)
     event=($l)
@@ -335,6 +337,7 @@ backup() {
   log removing device mux $MUX_INDEX index $REMOTE_SSD_INDEX
   [ -n "$SCSIHOST" ] || killtree -KILL $MYPID
   echo "scsi remove-single-device $SCSIHOST" | tee /proc/scsi/scsi 2>&1 | logstdout
+  echo $SCSIHOST >> $REMOVED_SCSI_TMP
 
   # set backuped flag
   touch $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_backuped || killtree -KILL $MYPID
@@ -521,12 +524,14 @@ export QSEQ_TMP=$(mktemp --tmpdir=$TMP)
 export QUITTING_TMP=$(mktemp --tmpdir=$TMP)
 export SERIAL_DONE_TMP=$(mktemp --tmpdir=$TMP)
 export MODULE_ADDRESS_TMP=$TMP/../modules
+export REMOVED_SCSI_TMP=$TMP/removed_scsi
 
 echo 0 > $QSEQ_TMP
 echo 0 > $BACKUP_DONE_TMP
 echo 0 > $MUX_DONE_TMP
 echo 0 > $QUITTING_TMP
 touch $MODULE_ADDRESS_TMP
+touch $REMOVED_SCSI_TMP
 
 log get camera uptime
 CAMERA_UPTIME=$(get_camera_uptime) 
@@ -607,6 +612,13 @@ wait
 
 log resetting eyesis ide
 reset_eyesis_ide || exit 1
+sort -u $REMOVED_SCSI_TMP | while read hbtl ; do 
+  log "adding previously removed scsi devices"
+  echo "scsi add-single-device $hbtl" | tee /proc/scsi/scsi 2>&1 | logstdout
+  sed -r -i -e "/^$hbtl\$/d" $REMOVED_SCSI_TMP
+done
+
+log all_done
 
 rm $TMP/$$ -r 2> /dev/null
 

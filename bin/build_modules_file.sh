@@ -55,7 +55,7 @@ SPOOL=/var/spool/elphel
 mkdir -p $SPOOL || exit 1
 [ -n "$DEBUG" ] && set -x
 
-trap "killtree -9 $MYPID yes" EXIT SIGINT SIGKILL SIGHUP
+trap "killtree -9 $MYPID yes" EXIT SIGINT SIGKILL SIGTERM SIGHUP
 
 assertcommands() {
   while [ $# -ne 0 ] ; do
@@ -292,8 +292,10 @@ enqueue_next_ssd() {
   if [ "$MUX_DONE" = "${#MUXES[@]}" ] ; then
     if [ $(sort -u $SERIAL_DONE_TMP | wc -l) -eq $N ] ; then
       log ${LINENO} exit_status 0
+      echo 0 > $EXIT_CODE_TMP
     else
       log ${LINENO} exit_status 1
+      echo 1 > $EXIT_CODE_TMP
     fi
     killtree -KILL $MYPID
   fi
@@ -461,6 +463,7 @@ mkdir -p $TMP
 
 # create shared variables and inter-process storage
 export MYPID=$BASHPID
+export EXIT_CODE_TMP=$(mktemp --tmpdir=$TMP)
 export DISK_CONNECTING_TMP=$(mktemp --tmpdir=$TMP)
 export SSD_SERIAL_TMP=$(mktemp --tmpdir=$TMP)
 export REMOVED_DEVICES=$(mktemp --tmpdir=$TMP)
@@ -470,6 +473,7 @@ export QSEQ_TMP=$(mktemp --tmpdir=$TMP)
 export SERIAL_DONE_TMP=$(mktemp --tmpdir=$TMP)
 export REMOVED_SCSI_TMP=$TMP/../removed_scsi
 
+echo 1 > $EXIT_CODE_TMP
 echo 0 > $QSEQ_TMP
 echo 0 > $MUX_DONE_TMP
 touch $REMOVED_SCSI_TMP
@@ -550,18 +554,28 @@ done
 log ${LINENO} starting queue processing
 connect_q_run &
 
+# wait background jobs termination
 wait
 
-log ${LINENO} resetting eyesis ide
+# disable ctrl-c
+trap '' SIGINT
+
+# reset multiplexers
+log ${LINENO} resetting multiplexers
 reset_eyesis_ide
 
+# add previously removed scsi devices
 sort -u $REMOVED_SCSI_TMP | while read hbtl ; do 
   log ${LINENO} "adding previously removed scsi devices"
   echo "scsi add-single-device $hbtl" | tee /proc/scsi/scsi 2>&1 | logstdout ${LINENO}
   sed -r -i -e "/^$hbtl\$/d" $REMOVED_SCSI_TMP
 done
 
-log ${LINENO} exit
+EXIT_CODE=$(cat $EXIT_CODE_TMP)
 
+# remove temporary files
 rm $TMP/$$ -r 2> /dev/null
+
+log ${LINENO} exit $EXIT_CODE
+exit $EXIT_CODE
 

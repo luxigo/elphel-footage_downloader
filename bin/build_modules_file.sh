@@ -169,9 +169,10 @@ save_module_address() {
   local SERIAL=$3
   grep -q -E -e " $SERIAL\$" $MODULES_FILE && return 0
   echo $(get_module_index $SERIAL) $MUX_INDEX $REMOTE_SSD_INDEX $SERIAL >> $MODULES_FILE
-  sort -u $MODULES_FILE > /tmp/${MODULES_FILE}.$$
-  cat ${MODULES_FILE}.$$ > $MODULES_FILE
-  rm ${MODULES_FILE}.$$
+  MODULES_FILE_TMP=/tmp/$(basename $MODULES_FILE).$$
+  sort -u $MODULES_FILE > $MODULES_FILE_TMP
+  cat $MODULES_FILE_TMP > $MODULES_FILE
+  rm $MODULES_FILE_TMP
 }
 
 # check that specified module address match saved one
@@ -363,9 +364,9 @@ connect_q_run() {
       touch $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_connecting || killtree -KILL $MYPID
 
       INOTIFY_STDERR=$(mktemp)
-      timeout -k 10 30 inotifywait -e close_write $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_connecting 2> $INOTIFY_STDERR &
+      timeout -k 10 30 inotifywait -e close_write $TMP/${MUX_INDEX}_${REMOTE_SSD_INDEX}_connecting > /dev/null 2> $INOTIFY_STDERR &
       TIMEOUTPID=$!
-      wait_watches_established $INOTIFY_STDERR 2>&1 | grep -v -e INOTIFY_STDERR logstdout ${LINENO} 
+      wait_watches_established $INOTIFY_STDERR 2>&1 | grep -v -e INOTIFY_STDERR | logstdout ${LINENO} 
 
       # before requesting disk connection, save connecting disk info
       echo $MUX_INDEX $REMOTE_SSD_INDEX $ISRETRY > $DISK_CONNECTING_TMP
@@ -494,7 +495,7 @@ else
 fi
 
 # set destination folder
-DEST="$DESTINATION/$MACADDR"
+DEST="$DESTINATION/$(echo $MACADDR | tr 'a-f' 'A-F')"
 
 mkdir -p "$DEST/info/footage_downloader" || exit 1
 export MODULES_FILE="$DEST/info/footage_downloader/modules"
@@ -508,7 +509,7 @@ done
 STATUS=()
 log ${LINENO} get ssd serials
 export SSD_SERIAL=()
-get_remote_disk_serial /dev/hda 2>&1 | tee | while read l ; do
+get_remote_disk_serial /dev/hda 2>&1 | while read l ; do
   msg=($l)
   [ ${msg[0]} = "sshall:" ] || continue
   [ ${msg[2]} = "stderr" ] && log ${LINENO} get_remote_disk_serial: $l
@@ -529,7 +530,7 @@ get_remote_disk_serial /dev/hda 2>&1 | tee | while read l ; do
   esac
 done
 
-cat $SSD_SERIAL_TMP
+cat $SSD_SERIAL_TMP | logstdout ${LINENO}
 . $SSD_SERIAL_TMP
 
 log ${LINENO} got ${#SSD_SERIAL[@]} SSD serials
